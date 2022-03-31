@@ -312,7 +312,7 @@ r2  relative distance between nodes at the stop
     and r2 are both 1, the node will be uniformly distributed.  When r1 or r2 
     are greater than 1, the nodes near the respective end of the node will be
     more widly spaced by the corresponding factor.  For example, setting r1 to
-    0.5 and r2 to 1 would double the node spacing at the start and keep the 
+    0.5 and r2 to 1 would double the node density at the start and keep the 
     nominal spacing at the stop.
     
     Because the node distribution is generated from a cubic polynomial, the 
@@ -771,10 +771,11 @@ Generic base cass.  See the module documentation for details.
     def dz(self, index):
         """dz  Return the coefficients for the first derivative at index
     
-    c, cp, cpp = dz(index)
+    C, Cp, Cpp = dz(index)
     
-Returns a three-element vector with the coefficients for estimating a 
-derivative at index using the node values of itself and its neighbors.
+Returns three-element vectors with the coefficients for estimating the 
+solution value and its first and second derivatives based the node value
+and its neighbors' values.
 
     ---o-----o-----o---
       k-1    k    k+1
@@ -794,10 +795,16 @@ Interpolation functions for y(z) passing through the k-element, are
               (z - zk-1)(z - zk+1)
      b(z) = ------------------------
              (zk - zk-1)(zk - zk+1)
-             
-               (z - zk)(z - zk-1)
-     c(z) = -------------------------
-             (zk+1 - zk)(zk+1 - zk-1)
+              
+              (z - zk)(z - zk-1)
+     c(z) = ------------------------
+            (zk+1 - zk)(zk+1 - zk-1)
+
+The value of each evaluated at zk is simple
+
+a(zk) = 0
+b(zk) = 1
+c(zk) = 0
 
 The first derivatives evaluated at zk quantifies the contribution of 
 each node value to the derivative of y(zk).
@@ -813,6 +820,21 @@ a"(zk) = 2 / (zk-1 - zk) (zk-1 - zk+1)
 b"(zk) = -2 / (zk - zk-1) (zk - zk+1)
 c"(zk) = 2 / (zk+1 - zk) (zk+1 - zk-1)
 
+These coefficient triplets are returned as arrays in a tuple, so
+
+    C =   np.array([a(zk),   b(zk),   c(zk)  ])
+    Cp =  np.array([a'(zk),  b'(zk),  c'(zk) ])
+    Cpp = np.array([a"(zk),  b"(zk),  c"(zk) ])
+
+The function's derivatives are calculated from the inner (dot) product
+between the node vector and these coefficient vectors.
+
+y = np.dot(Y, C)
+yp = np.dot(Y, Cp)
+ypp = np.dot(Y, Cpp)
+
+Because the coefficient vectors are only a function of the grid, they do
+not need to be re-evaluated during the iteration.
 """
         d10 = self.z[index+1] - self.z[index]
         d0_1 = self.z[index] - self.z[index-1]
@@ -823,7 +845,11 @@ c"(zk) = 2 / (zk+1 - zk) (zk+1 - zk-1)
             1/d0_1 - 1/d10,
             d0_1/d1_1/d10])
         c2 = np.array([
-            2/d0_1
+            2/d0_1/d1_1,
+            -2/d10/d0_1,
+            2/d10/d1_1
+            ])
+        return c0,c1,c2
 
 
     def init_solution(self, eta=None, nu=None, phi=None):
@@ -1005,12 +1031,13 @@ z1, z2      These are the locations where the formation region begins and ends.
             init_param enforces  0 < z1 < z2 < 1
             
 Optional parameters and their defaults:
-R           Positive ion Reynolds number (2500.)
-alpha       Dimensionless Debye length (1e-3)
-beta        Dimensionless inverse recombination length (10.)
+R           Positive ion Reynolds number (4.)
+alpha       Dimensionless velocity length scale (1.)
+beta        Dimensionless secondary ion length scale (1.)
 mu          Negative-to-positive species mobility ratio (200.)
 tau         Negative-to-positive temperature ratio (1.)
-phia        Dimensionless applied voltage (0.)
+psia        Dimensionless applied electric field (0.)
+omega       Dimensionless secondary ion formation rate (0.)
 
 Derived parameters:
 omega       Formation rate = 1./(z2-z1).  User values are overwritten.
@@ -1020,29 +1047,18 @@ omega       Formation rate = 1./(z2-z1).  User values are overwritten.
 
         p = self.param
         # Set some model defaults
-        p.R = 2500.
-        p.alpha = 1e-3
-        p.beta = 10.
+        p.R = 4.
+        p.alpha = 1.
+        p.beta = 1.
         p.mu = 200.
         p.tau = 1.
-        p.phia = 0.
-        p.z1 = None
-        p.z2 = None
+        p.psia = 1.
+        p.omega = 0.
         # Read in the arguments
         if arg is not None:
             p.set(arg)
         if kwarg:
             p.set(kwarg)
-        
-        # Test z1 and z2
-        if p.z1 is None or p.z2 is None:
-            raise Exception('FiniteIon1D.init_param(): z1 and z2 parameters are required.')
-        elif not (0 < p.z1 < p.z2 < 1):
-            raise Exception('FiniteIon1D.init_param(): z1 and z2 parameters do not obey: 0 < z1 < z2 < 1.')
-            
-        # Force the omega value last (just in case the user tried to write it in kwarg)
-        p.omega = 1./(p.z2-p.z1)
-
 
     def init_grid(self, d, r=None):
         """Initialize the grid and related parameters
@@ -1050,71 +1066,45 @@ omega       Formation rate = 1./(z2-z1).  User values are overwritten.
         OR
     M.init_grid( d )
         OR
-    M.init_grid( (d0, d1, d2) )
-        OR
-    M.init_grid( d, (r0, r1, r2, r3) )
+    M.init_grid( d, (r0, r1) )
 
 ** Required arguments: 
     z
 If the only argument is a numpy array, it will be treated as the node locations to
-use.  Be warned: if z1 and z2 values are not found in z, an Exception will be raised.
-    
-    d OR d=(d0, d1, d2)
-If d is a single scalar value, it is interpreted as the approximate uniform node 
-spacing everywhere in the solution domain.  If d is an array-like type, it is
-expected to contain three elements that will be interpreted as the node spacing 
-in sub-domains 
-    d[0] : 0 <= z < z1 (upstream of the reaction zone), 
-    d[1] : z1 <= z <= z2 (in the reaction zone),
-    d[2] : z2 <= z <= 0 (downstream of the reaction zone)
+use.
 
-The actual node spacing will be adjusted to allow the node 
+    d
+Is interpreted as the nominal uniform node spacing everywhere in the solution domain.
 
 ** Optional arguments: 
-    r = (r0, r1, r2, r3)
-Regardless of how many d-values are supplied, the optional r[X] keyword 
-arguments enhance the relative node spacing at the boundaries of the sub-domains
+    r = (r0, r1)
+The optional r parameters enhance the relative node spacing at the domain boundaries
 (see diagram).  
-    r0 : z=0 (upstream boundary)
-    r1 : z=z1 (beginning of the reaction region)
-    r2 : z=z2 (end of the reaction region)
-    r3 : z=1 (domain end)
+    r0 : z=0 (surface boundary)
+    r1 : z=1 (free stream boundary)
 
-** How is the grid calculated?
-The domain [0,1] is divided into three sub-domains formed by the reaction region
-z1 and z2.  In each a cubic grid (see the ion1d.cubicgrid() function) is used 
-to construct a piece-wise continuous distribution of node points.  The node 
-spacing is adjusted at the interfaces z1 and z2 so that there are no sharp 
-discontinuities in node spacing.
+For example, if r0 were 0.5, the grid spacing would be half (double density) at the
+stagnation surface.  If r1 were 1, then the additional node density at z=0 would 
+come at the cost of node density in the center of the domain.
+
+The domain [0,1] is divided into elements jointed at nodes with cubic spacing
+(see the ion1d.cubicgrid() function).
 
 The diagram below shows the sub-domains and the arguments that affect them.
     
- r0   d0    r1       d1         r2              d2                  r3
- |          |                   |                                   |
- +----------+-------------------+-----------------------------------+
-z=0        z=z1                z=z2                                z=1
+ r0                             d                                  r1
+ |                                                                  |
+ +------------------------------------------------------------------+
+z=0                                                                z=1
 
-The node spacing in each of the sub-domains will not always be exactly what is 
-specified.  The algorithm will adjust the actual spacing so that nodes always 
-fall exactly on z=z1 and z=z2.  The algorithm stores the indices corresponding 
-to z=z1 and z=z2 in k[0] and k[1] respectively.
-
-At the interfaces, the nominal grid spacing will be the average of that of the
-neighboring sub-domains.  That can be modified by assinging a value to the 
-appropriate rX parameter.  For example, the nominal node spacing at z=z1 is 
-calculated r1 * 0.5 * (d0 + d1), so r1 = 1 does not affect the grid spacing, but
-r1 = 0.5 would double the node density.
-
-It should be emphasized that the actual grid spacing will vary significantly to 
-prevent discontinuities and to accommodate the r parameters.
+See the cubicgrid() frunction for more information on how the grid spacing is 
+calculated.  
 
 ** What does a raised Exception mean?
 Grid generation can fail if the cubic function is forced into non-monotonic 
 behaviors (if the node locations are not strictly increasing).  This condition 
 is automatically detected by the cubicgrid() function, but the remedy may not 
-be obvious.  This problem is likely when there are neighboring regions with 
-strongly dissimilar grid spacing, so it can be remedied by experimenting with
-more uniform grid spacings or by experimenting with different r-values.
+be obvious.  It is usually caused because r-values are too far from unity.
 """
         # Check to see if a grid already exists
         if self.initstate > 0:
@@ -1127,78 +1117,39 @@ more uniform grid spacings or by experimenting with different r-values.
 
         # If d is a numpy array, it is an explicit grid definition
         if isinstance(d, np.ndarray):
-            # Find z1 and z2
-            k0 = d.searchsorted(p.z1)
-            if d[k0] != p.z1:
-                raise Exception('FiniteIon1D.init_grid(): Did not find z1 in explicit grid definition.')
-            k1 = d.searchsorted(p.z2)
-            if d[k1] != p.z2:
-                raise Exception('FiniteIon1D.init_grid(): Did not find z2 in explicit grid definition.')
+            # Test for monotonicity
+            if np.any(d[1:] - d[:-1] <= 0):
+                raise Exception('INIT_GRID: Explicitly defined grid was not monotonic. Aborting!')
             self.z = d
-            self.k = [k0, k1]
             self.initstate=1
             return
             
         # Assign spacing to each of the sub-domains
-        # If d is an array-like, 
-        if hasattr(d, '__iter__'):
-            try:
-                d0,d1,d2 = d
-                d0 = float(d0)
-                d1 = float(d1)
-                d2 = float(d2)
-            except:
-                raise Exception('Multiple grid distances should be a three-element array-like of floats')
-        # If d is a scalar
-        else:
-            try:
-                d0 = d1 = d2 = float(d)
-            except:
-                raise Exception('If d is a scalar, it must be convertible to a float')
+        d = float(d)
+        
         # Assign relative spacing to each of the sub-domain boundaries
         if r is None:
-            r0 = r1 = r2 = r3 = 1.
+            r0 = r1 = 1.
         else:
             try:
-                r0,r1,r2,r3 = r
-                r0 = float(r0)
-                r1 = float(r1)
-                r2 = float(r2)
-                r3 = float(r3)
+                r0,r1 = [float(rr) for rr in r]
             except:
-                raise Exception('If r is specified, it must be a four-element array-like of floats')
+                raise Exception('If r is specified, it must be a two-element array-like of floats')
         
         # Modify the nominal grid spacing to arrive at element counts
-        N1 = int(np.ceil(p.z1 / d0))
-        N2 = int(np.ceil((p.z2-p.z1) / d1))
-        N3 = int(np.ceil((1.-p.z2) / d2))
-        
-        # Calculate the spacing at the two interfaces
-        d01 = r1 * 0.5 * (d0+d1)
-        d12 = r2 * 0.5 * (d1+d2)
-        
+        N = int(np.ceil(1 / d))        
         try:
-            zz1 = p.z1*cubicgrid(N1, r0, d01/d0, stop=False)
+            self.z = cubicgrid(N, r0, r1)
         except:
-            raise Exception('These settings caused the up-stream zone (0<=z<z1) to be non-monotonic.  Try new values for d0, d1, or r1.')
-        try:
-            zz2 = p.z1 + (p.z2-p.z1)*cubicgrid(N2, d01/d1, d12/d1, stop=False)
-        except:
-            raise Exception('These settings caused the reaction zone (z1<=z<z2) to be non-monotonic.  Try new values for d or r.')
-        try:
-            zz3 = p.z2 + (1.-p.z2)*cubicgrid(N3, d12/d2, r3)
-        except:
-            raise Exception('These settings caused the down-stream zone (z2<=z<=1) to be non-monotonic.  Try new values for d1, d2, or r2.')
-            
-        self.z = np.concatenate((zz1,zz2,zz3))
-        self.k = [N1, N1+N2]
+            raise Exception('These settings caused the grid to be non-monotonic.  Try new values for r0 and/or r1.')
         self.initstate = 1
+
 
     def init_mat(self):
         """Construct the solution matrices/vectors C, L, and Q."""
         
         if self.initstate < 1:
-            raise Exception('INIT_MAT::Failed.  Run INIT_GRID() first.')
+            raise Exception('INIT_MAT::Failed.  Run INIT_GRID() first, please.')
         elif self.initstate > 1:
             print('INIT_MAT WARNING::Matrices already generated. Overwriting.')
             Ion1D.__init__(self, initstate = 1)
@@ -1212,29 +1163,17 @@ more uniform grid spacings or by experimenting with different r-values.
         self.L = spn.SparseN((N,N))
         self.Q = spn.SparseN((N,N,N))
         
-        # calculate the square of alpha
-        aa = p.alpha*p.alpha
-        
         # Loop over the internal nodes
         for k in range(1,self.z.size-1):
             etak = k
             nuk = k + self.z.size
             phik = k + 2*self.z.size
-            # Finite differences
-            dz10 = self.z[k] - self.z[k-1]
-            dz21 = self.z[k+1] - self.z[k]
-            dz20 = dz10 + dz21
-            
-            ap = - dz21 / (dz10 * dz20)
-            bp = (dz21 - dz10)/(dz10 * dz21)
-            cp = dz10 / (dz20 * dz21)
-            
-            app = 2 / (dz10 * dz20)
-            bpp = -2 / (dz10 * dz21)
-            cpp = 2 / (dz20 * dz21)
+
+            # Calculate the derivative coefficients
+            c,cp,cpp = self.dz(k)
             
             # Calculate the electric reynolds number
-            Re = p.R / (p.mu * p.tau)
+            Re = p.R / p.mu
             
             self.L[etak,etak-1] = -ap + app/p.R
             self.L[etak,etak] = -bp + bpp/p.R
