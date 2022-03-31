@@ -57,7 +57,8 @@ There are also metadata available unique to the sparse nature of the system
     S.nnz()     # Function returns the number of non-zero elements
 
 SparseN tensors support basic mathematical operaitons
-Unary operations with sparse tensors:
+Unary operations with sparse tensors return ThinSparseN instances.  These
+do not contain new copies of the original data.
     -S1
     S1.transpose(..)
     
@@ -464,7 +465,6 @@ See also: set()
         return self.value[ii]
         
         
-        
     def set(self, value, *index):
         """SET   assign a scalar value to a tensor element
     S.set(value, ii, jj, kk, ... )
@@ -486,7 +486,7 @@ See also: get()
 Be careful; large multi-dimensional tensors can require large amounts
 of memory in dense realizations."""
         d = np.zeros(self.shape)
-        for index,value in zip(self.index, self.value):
+        for index,value in self:
             d[index] = value
         return d
 
@@ -724,6 +724,22 @@ __getitem__ call.
         self.size = np.product(self.shape)
         self.index = VMap(self._imap, self._imapi, parent.index)
         self.value = parent.value
+        # NOTE!!!
+        # This approach is a little dangerous, because it makes both the index
+        # and value arrays appear to have all the same elements as the parent
+        # BUT indices that do not belong to the slice will be returned as
+        # None.  The vast majority of methods in the SparseN class use 
+        # _find_index, so overloading that definition fixes most issues.
+        # However, some still need to iterate over all the elements. For that
+        # reason, the SparseIter class is written to be robust against None
+        # values in the index - it just skips over them, so the application
+        # is blind to the issue.
+        # 
+        # The virtue is that no redundant lists need to be maintained.  Instead,
+        # it is only important that SparseN algorithms be written sensitive to
+        # the problem.  __add__ and __sub__ for example should ONLY access 
+        # values and indices directly if they can be garanteed to be in a 
+        # SparseN and not a SliceSparseN instance.
     
     def _find_index(self, index, iimin=None, iimax=None):
         return self.parent._find_index(self._imap(index), iimin=iimin, iimax=iimax)
@@ -752,7 +768,11 @@ instances.  This is equivalent to zeroing a tensor."""
         return True
         
     def _imap(self, index):
-        """Map a slice index to its equivalent parent index"""
+        """Map a slice index to its equivalent parent index
+        
+Since slices always contain a subset of their parents, this should always 
+return a valid value.
+"""
         parent_index = list(self.iset)
         # Adjust the index to the parent dimensions
         for dim,ii in enumerate(index):
@@ -765,7 +785,11 @@ instances.  This is equivalent to zeroing a tensor."""
         return tuple(parent_index)
         
     def _imapi(self, parent_index):
-        """Map a parent index back to the slice index. Return None if it is not a member."""
+        """Map a parent index back to the slice index. Return None if it is not a member.
+        
+Since slices contain a subset of their parents, not all parent entries will
+appear in the slice.  When these indices are passed to _imapi, None is 
+returned."""
         if not self._match(parent_index):
             return None
         index = []
@@ -781,18 +805,7 @@ instances.  This is equivalent to zeroing a tensor."""
         for index in self.parent.index:
             out += self._match(index)
         return out
-        
-    def todense(self):
-        """Return a dense copy of the tensor
-    D = S.todense()
-    
-Be careful; large multi-dimensional tensors can require large amounts
-of memory in dense realizations."""
-        d = np.zeros(self.shape)
-        for index,value in zip(self.index, self.value):
-            if index:
-                d[index] = value
-        return d
+      
         
 
 class ThinSparseN(SparseN):
