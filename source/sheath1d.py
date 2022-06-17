@@ -312,7 +312,7 @@ r2  relative distance between nodes at the stop
     and r2 are both 1, the node will be uniformly distributed.  When r1 or r2 
     are greater than 1, the nodes near the respective end of the node will be
     more widly spaced by the corresponding factor.  For example, setting r1 to
-    0.5 and r2 to 1 would double the node spacing at the start and keep the 
+    0.5 and r2 to 1 would double the node density at the start and keep the 
     nominal spacing at the stop.
     
     Because the node distribution is generated from a cubic polynomial, the 
@@ -771,10 +771,11 @@ Generic base cass.  See the module documentation for details.
     def dz(self, index):
         """dz  Return the coefficients for the first derivative at index
     
-    c, cp, cpp = dz(index)
+    C, Cp, Cpp = dz(index)
     
-Returns a three-element vector with the coefficients for estimating a 
-derivative at index using the node values of itself and its neighbors.
+Returns three-element vectors with the coefficients for estimating the 
+solution value and its first and second derivatives based the node value
+and its neighbors' values.
 
     ---o-----o-----o---
       k-1    k    k+1
@@ -794,10 +795,16 @@ Interpolation functions for y(z) passing through the k-element, are
               (z - zk-1)(z - zk+1)
      b(z) = ------------------------
              (zk - zk-1)(zk - zk+1)
-             
-               (z - zk)(z - zk-1)
-     c(z) = -------------------------
-             (zk+1 - zk)(zk+1 - zk-1)
+              
+              (z - zk)(z - zk-1)
+     c(z) = ------------------------
+            (zk+1 - zk)(zk+1 - zk-1)
+
+The value of each evaluated at zk is simple
+
+a(zk) = 0
+b(zk) = 1
+c(zk) = 0
 
 The first derivatives evaluated at zk quantifies the contribution of 
 each node value to the derivative of y(zk).
@@ -813,6 +820,21 @@ a"(zk) = 2 / (zk-1 - zk) (zk-1 - zk+1)
 b"(zk) = -2 / (zk - zk-1) (zk - zk+1)
 c"(zk) = 2 / (zk+1 - zk) (zk+1 - zk-1)
 
+These coefficient triplets are returned as arrays in a tuple, so
+
+    C =   np.array([a(zk),   b(zk),   c(zk)  ])
+    Cp =  np.array([a'(zk),  b'(zk),  c'(zk) ])
+    Cpp = np.array([a"(zk),  b"(zk),  c"(zk) ])
+
+The function's derivatives are calculated from the inner (dot) product
+between the node vector and these coefficient vectors.
+
+y = np.dot(Y, C)
+yp = np.dot(Y, Cp)
+ypp = np.dot(Y, Cpp)
+
+Because the coefficient vectors are only a function of the grid, they do
+not need to be re-evaluated during the iteration.
 """
         d10 = self.z[index+1] - self.z[index]
         d0_1 = self.z[index] - self.z[index-1]
@@ -823,7 +845,10 @@ c"(zk) = 2 / (zk+1 - zk) (zk+1 - zk-1)
             1/d0_1 - 1/d10,
             d0_1/d1_1/d10])
         c2 = np.array([
-            2/d0_1
+            2/d0_1/d1_1,
+            -2/d10/d0_1,
+            2/d10/d1_1])
+        return c0,c1,c2
 
 
     def init_solution(self, eta=None, nu=None, phi=None):
@@ -868,13 +893,9 @@ Initializes the following members:
 
         # Set about calculating the initial error
         # Initialize an error vector
-        self.E = self.C.copy()
-        np.add( self.E, \
-                self.L.dot(1,0,self.X,asdense=True), \
-                out=self.E)
-        np.add( self.E, \
-                self.Q.dot(2,0,self.X).dot(1,0,self.X,asdense=True), \
-                out=self.E)
+        self.E = self.C \
+            + self.L.dot(1,0,self.X).todense()\
+            + self.Q.dot(2,0,self.X).dot(1,0,self.X).todense()
                 
         self.etaE = self.E[0:N]
         self.nuE = self.E[N:2*N]
@@ -897,7 +918,8 @@ The solution, X, obeys
             print('STEP_SOLUTION::WARNING:: It appears that init_post() has already been run.  Erasing.')
             self.post = {}
             self.initstate = 3
-        A = (self.L + self.QQT.dot(2,0,self.X,asdense=True))
+        
+        A = (self.L + self.QQT.dot(2,0,self.X)).todense()
         self.X -= np.linalg.solve(A,self.E)
         
         # Test for values less than zero.
@@ -905,14 +927,10 @@ The solution, X, obeys
             II = np.logical_or(self.eta < 0, self.nu < 0)
             self.eta[II] = 0
             self.nu[II] = 0
-            
-        np.copyto(self.E, self.C)
-        np.add( self.E, \
-                self.L.dot(1,0,self.X, asdense=True),\
-                out = self.E)
-        np.add( self.E, \
-                self.Q.dot(2,0,self.X).dot(1,0,self.X,asdense=True),\
-                out = self.E)
+        
+        self.E = self.C \
+            + self.L.dot(1,0,self.X).todense()\
+            + self.Q.dot(2,0,self.X).dot(1,0,self.X).todense()
                 
         self.ee.append(np.dot(self.E,self.E))
 
@@ -1003,9 +1021,9 @@ a dictionary with keyword, value pairs.
 Optional parameters and their defaults:
 formation   A True/False switch to turn on and off ion formation (True)
 convection  A True/False switch to turn on and off convection (True)
-R           Positive ion Reynolds number (2500.)
+R           Positive ion Reynolds number (4.)
 alpha       Dimensionless velocity length scale (1.)
-beta        Dimensionless formation length scale (1.)
+beta        Dimensionless secondary ion formation length scale (1.)
 mu          Negative-to-positive species mobility ratio (200.)
 tau         Negative-to-positive temperature ratio (1.)
 psi         Electric field strength in the neutral plasma (0.)
@@ -1019,12 +1037,12 @@ omega       If omega is not specified, it will be calculated from beta
 
         p = self.param
         # Set some model defaults
-        p.R = 2500.
-        p.alpha = 1e-3
-        p.beta = 10.
+        p.R = 4.
+        p.alpha = 1.
+        p.beta = 1.
         p.mu = 200.
         p.tau = 1.
-        p.psi = 0.
+        p.psia = 0.
         p.formation = True
         p.convection = True
         p.omega = None
@@ -1084,9 +1102,7 @@ in the middle of the domain.
 Grid generation can fail if the cubic function is forced into non-monotonic 
 behaviors (if the node locations are not strictly increasing).  This condition 
 is automatically detected by the cubicgrid() function, but the remedy may not 
-be obvious.  This problem is likely when there are neighboring regions with 
-strongly dissimilar grid spacing, so it can be remedied by experimenting with
-more uniform grid spacings or by experimenting with different r-values.
+be obvious.  It is usually caused because r-values are too far from unity.
 """
         # Check to see if a grid already exists
         if self.initstate > 0:
@@ -1099,36 +1115,47 @@ more uniform grid spacings or by experimenting with different r-values.
 
         # If d is a numpy array, it is an explicit grid definition
         if isinstance(d, np.ndarray):
+            # Test for monotonicity
+            if np.any(d[1:] - d[:-1] <= 0):
+                raise Exception('INIT_GRID: Explicitly defined grid was not monotonic. Aborting!')
             self.z = d
             self.initstate=1
             return
             
+        # Assign spacing to each of the sub-domains
+        d = float(d)
         
         # Assign relative spacing to each of the sub-domain boundaries
         if r is None:
             r0 = r1 = 1.
         else:
             try:
-                r0,r1 = r
-                r0 = float(r0)
-                r1 = float(r1)
+                r0,r1 = [float(rr) for rr in r]
             except:
-                raise Exception('If r is specified, it must be a four-element array-like of floats')
+                raise Exception('If r is specified, it must be a two-element array-like of floats')
         
+
         N = int(np.ceil(1./d))
-        self.z = cubicgrid(N, r1, r2, start=True, stop=True)
+        self.z = cubicgrid(N, r0, r1, start=True, stop=True)
         self.initstate = 1
+
 
     def init_mat(self):
         """Construct the solution matrices/vectors C, L, and Q."""
         
         if self.initstate < 1:
-            raise Exception('INIT_MAT::Failed.  Run INIT_GRID() first.')
+            raise Exception('INIT_MAT::Failed.  Run INIT_GRID() first, please.')
         elif self.initstate > 1:
             print('INIT_MAT WARNING::Matrices already generated. Overwriting.')
             Ion1D.__init__(self, initstate = 1)
         
         p = self.param
+        
+        # Calculate the electric reynolds number
+        Re = p.R / p.mu
+        # Calculate the velocity and formation functions
+        self.u = -1. + (1-self.z)**(1./p.alpha)
+        self.w = (1-self.z)**(1./p.beta)
         
         # How big are the tensors?
         N = 3*self.z.size
@@ -1137,107 +1164,106 @@ more uniform grid spacings or by experimenting with different r-values.
         self.L = spn.SparseN((N,N))
         self.Q = spn.SparseN((N,N,N))
         
-        # calculate the square of alpha
-        aa = p.alpha*p.alpha
+        # How long are the solution segments
+        N = self.z.size
         
         # Loop over the internal nodes
         for k in range(1,self.z.size-1):
             etak = k
-            nuk = k + self.z.size
-            phik = k + 2*self.z.size
-            # Finite differences
-            dz10 = self.z[k] - self.z[k-1]
-            dz21 = self.z[k+1] - self.z[k]
-            dz20 = dz10 + dz21
+            nuk = k + N
+            phik = k + 2*N
+
+            zk = self.z[k]
+            uk = self.u[k]
+            wk = self.w[k]
             
-            ap = - dz21 / (dz10 * dz20)
-            bp = (dz21 - dz10)/(dz10 * dz21)
-            cp = dz10 / (dz20 * dz21)
+            # Calculate the derivative coefficients
+            c,cp,cpp = self.dz(k)
             
-            app = 2 / (dz10 * dz20)
-            bpp = -2 / (dz10 * dz21)
-            cpp = 2 / (dz20 * dz21)
+            # The first index indicates which equation is being 
+            # represented. etak refers to the conservation of positive
+            # ions at node k.
+            ww = (1-zk) ** (1./p.beta - 1.)
+            self.C[etak] = p.omega*ww
+            self.C[nuk] = p.omega*ww/p.mu
             
-            # Calculate the electric reynolds number
-            Re = p.R / (p.mu * p.tau)
-            
-            self.L[etak,etak-1] = -ap + app/p.R
-            self.L[etak,etak] = -bp + bpp/p.R
-            self.L[etak,etak+1] = -cp + cpp/p.R
-            
-            self.L[nuk,nuk-1] = -ap + app/Re
-            self.L[nuk,nuk] = -bp + bpp/Re
-            self.L[nuk,nuk+1] = -cp + cpp/Re
-            
-            self.L[phik,phik-1] = aa * app
-            self.L[phik,phik] = aa * bpp
-            self.L[phik,phik+1] = aa * cpp
+            # The second index indicates which node coefficient is 
+            # being accessed.  Since a node is only dependent on itself
+            # and its immediate neighbors, etak-1:eta+2 spans all 
+            # relevant nodes.
+            # ::Linear terms in the eta equation
+            self.L[etak,etak-1:etak+2] = -(1 + p.R*uk)*cp + (1-zk)*cpp            
+            # ::Linear terms in the nu equation
+            self.L[nuk,nuk-1:nuk+2] = -(1 + Re*uk)*cp + (1-zk)*cpp
+            # :: Linear terms in the phi equation
+            self.L[phik,phik-1:phik+2] = (1-zk)*cp
             self.L[phik,etak] = 1.
             self.L[phik,nuk] = -1.
             
-            self.Q[etak,etak,nuk] = -p.beta
+            # The third index, like the second index indicates the 
+            # second node value involved in the quadratic term.
+            cc = c.reshape((3,1)) * cp.reshape((1,3))
+            cc = cc + cc.T
+            self.Q[etak,etak-1:etak+2,phik-1:phik+2] = p.tau * cc
+            self.Q[nuk,nuk-1:nuk+2,phik-1:phik+2] = -cc
             
-            self.Q[nuk,etak,nuk] = -p.beta
-            
-            self.Q[etak,etak-1,phik-1] = ap*ap * p.tau/p.R
-            self.Q[etak,etak,phik-1] = (bp*ap + app) * p.tau/p.R
-            self.Q[etak,etak+1,phik-1] = cp*ap * p.tau/p.R
-            self.Q[etak,etak-1,phik] = ap*bp * p.tau/p.R
-            self.Q[etak,etak,phik] = (bp*bp + bpp) * p.tau/p.R
-            self.Q[etak,etak+1,phik] = cp*bp * p.tau/p.R
-            self.Q[etak,etak-1,phik+1] = ap*cp * p.tau/p.R
-            self.Q[etak,etak,phik+1] = (bp*cp + cpp) * p.tau/p.R
-            self.Q[etak,etak+1,phik+1] = cp*cp * p.tau/p.R
-
-            self.Q[nuk,nuk-1,phik-1] = -ap*ap / Re
-            self.Q[nuk,nuk,phik-1] = -(bp*ap + app) / Re
-            self.Q[nuk,nuk+1,phik-1] = -cp*ap / Re
-            self.Q[nuk,nuk-1,phik] = -ap*bp / Re
-            self.Q[nuk,nuk,phik] = -(bp*bp + bpp) / Re
-            self.Q[nuk,nuk+1,phik] = -cp*bp / Re
-            self.Q[nuk,nuk-1,phik+1] = -ap*cp / Re
-            self.Q[nuk,nuk,phik+1] = -(bp*cp + cpp) / Re
-            self.Q[nuk,nuk+1,phik+1] = -cp*cp / Re
-            
-            if self.k[0] < k < self.k[1]:
-                self.C[etak] = p.omega
-                self.C[nuk] = p.omega
-                
-        # Add adjusted forcing at the edge of the reaction region
-        k = self.k[0]
-        etak = k
-        nuk = etak + self.z.size
-        # Scale by the fraction of the node that belongs to the reaction region
-        ss = (self.z[k+1]-self.z[k])/(self.z[k+1]-self.z[k-1])
-        self.C[nuk] = self.C[etak] =  ss * p.omega
-
-        k = self.k[1]
-        etak = k
-        nuk = etak + self.z.size
-        # Scale by the fraction of the node that belongs to the reaction region
-        ss = (self.z[k]-self.z[k-1])/(self.z[k+1]-self.z[k-1])
-        self.C[nuk] = self.C[etak] =  ss * p.omega
-
         # Add boundary conditions
         etak = 0
-        nuk = etak + self.z.size
-        phik = nuk + self.z.size
+        nuk = etak + N
+        phik = nuk + N
         self.L[etak,etak] = 1        # eta(0) = 0
         self.L[nuk,nuk] = 1          # nu(0) = 0
-        self.L[phik,phik] = 1        # phi(0) = phia
-        self.C[phik] = -p.phia
+        self.L[phik,phik:phik+2] = [-1,1]        # phi'(0) = 0
         
         etak = self.z.size-1
         nuk = etak + self.z.size
         phik = nuk + self.z.size
-        self.L[etak,etak] = 1        # eta(1) = 0
-        self.L[nuk,nuk] = 1          # nu(1) = 0
-        self.L[phik,phik] = 1        # phi(1) = 0
+        self.L[etak,etak] = 1        # eta(1) = 1
+        self.C[etak] = -1.
+        self.L[nuk,nuk] = 1          # nu(1) = 1
+        self.C[nuk] = -1.
+        self.L[phik,phik] = 1        # phi(1) = psia
+        self.C[phik] = -p.psia
+        
         
         # Finally, generate QQT
         self.QQT = self.Q + self.Q.transpose(1,2)
         
         self.initstate = 2
+
+    def init_solution(self):
+        """Initialize the solution vectors
+    X, E, eta, nu, phi, etaE, nuE, phiE
+
+and the total error history, ee
+"""
+        if self.initstate <2:
+            raise Exception('It appears that the solution matrices have not been initialized.  Run init_mat() first.')
+        elif self.initstate>=3:
+            print("INIT_SOLUTION::WARNING:: Overwriting an existing solution.")
+            
+        N = self.z.size
+        self.X = np.empty((N*3,), dtype=float)
+        self.E = np.empty((N*3,), dtype=float)
+        self.eta = self.X[0:N]
+        self.nu = self.X[N:2*N]
+        self.phi = self.X[2*N:3*N]
+        self.etaE = self.E[0:N]
+        self.nuE = self.E[N:2*N]
+        self.phiE = self.E[2*N:3*N]
+        
+        y = np.linspace(0,1,N)
+        self.eta[:] = y
+        self.nu[:] = y
+        self.phi[:] = self.param.psia
+        
+        self.E[:] = self.C \
+            + self.L.dot(1,0,self.X).todense()\
+            + self.Q.dot(2,0,self.X).dot(1,0,self.X).todense()
+        
+        self.ee = [np.dot(self.E,self.E)]
+        
+        self.initstate = 3
 
 class AnchoredFiniteIon1D(Ion1D):
     """Like FiniteIon1D, but with formation starting at z=0.

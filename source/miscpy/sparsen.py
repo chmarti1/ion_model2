@@ -1,6 +1,10 @@
 # SparseN
 #   A module for providing the SparseN N-dimensional sparse tensor class
 #
+# Rev 1.1  3/2022
+# Removed dangerous defaults and shape calculations from the ThinSparseN
+# definition.
+
 
 # To Do items:
 #   Create overloaded basic operations (multiply, add, subtract, negate)
@@ -11,6 +15,9 @@
 import time
 import multiprocessing as mp
 import numpy as np
+
+
+__version__ = '1.1'
 
 
 
@@ -29,13 +36,29 @@ as a copy of an existing SparseN matrix, S, or from a dense array, D.
 Once created, indices can be summoned or set as normal
     S[ii, jj, ...] = value
     value = S[ii, jj, ...]
+    
+Slices are supported.
+    S[:,:,2]    # Returns a SliceSparseN instance.
+    ss = S[:,:,2]
+    ss[0,1] = 14.
+    S[0,1,2]    # Returns 14
 
 Meta data on the tensor shape are available in numpy-compatible member data
-    A.ndim      # Number of dimensions
-    A.shape     # tensor shape tuple (len(shape) == ndim)
+    S.ndim      # Number of dimensions
+    S.shape     # tensor shape tuple (len(shape) == ndim)
+    S.size      # total number of tensor elements
+    
+Data are stored in internal lists.  These lists should never be modified directly
+Always use the documented methods for accessing these values.
+    S.index     # list of tuples where values can be found
+    S.value     # list of the scalar values in each location
+    
+There are also metadata available unique to the sparse nature of the system
+    S.nnz()     # Function returns the number of non-zero elements
 
 SparseN tensors support basic mathematical operaitons
-Unary operations with sparse tensors:
+Unary operations with sparse tensors return ThinSparseN instances.  These
+do not contain new copies of the original data.
     -S1
     S1.transpose(..)
     
@@ -63,10 +86,21 @@ Binary operations with scalars:
 """
 
     def __init__(self, S):
-        if issubclass(type(S), SparseN):
+        # Establish a special case for SliceSparseN copies.
+        if isinstance(S, SliceSparseN):
             SparseN.__init__(self, S.shape)
-            self.index = S.index.copy()
-            self.value = S.value.copy()
+            # Using the iterator will automatically skip the None entries
+            # found in SliceSparseN entries.  This is slower than using
+            # a list's copy() method, so it is reserved for Slices.
+            for index,value in S:
+                self.index.append(index)
+                self.value.append(value)
+        # It is safe to copy for SparseN and ThinSparseN types
+        elif isinstance(S, SparseN):
+            SparseN.__init__(self, S.shape)
+            for index,value in S:
+                self.index.append(index)
+                self.value.append(value)
         elif isinstance(S, np.ndarray):
             SparseN.__init__(self, S.shape)
             for index,value in zip(np.ndindex(S.shape),np.nditer(S)):
@@ -84,27 +118,93 @@ Binary operations with scalars:
             self.value = []
     
     def __setitem__(self, index, value):
-        self._inrange(index)
-        found, ii = self._find_index(index)
-        if not found:
-            self.index.insert(ii,index)
-            self.value.insert(ii,value)
+        # Check for slicing
+        isslice = False
+        for ii in index:
+            if isinstance(ii, slice):
+                isslice = True
+                break
+                
+        # If this is a slice assignment
+        if isslice:
+            if len(index) != self.ndim:
+                raise Exception("GETITEM: number of indices must match the tensor dimension")
+            
+            S = SliceSparseN(self, index)
+            # Case out types of sparse assignments
+            # Scalar source
+            if np.isscalar(value):
+                # No need to zero since we're going to write to all 
+                # elements anyway
+                for index in np.ndindex(S.shape):
+                    S._insert(index, value)
+            # Sparse source
+            elif isinstance(value,SparseN):
+                if S.shape != value.shape:
+                    raise Exception('Cannot assign a tensor of shape {:s} to a slice of shape {:s}'.format(repr(value.shape), repr(S.shape)))
+                # If the source and destination share parentage, we need to copy the data before moving it
+                if self.getparent() is value.getparent():
+                    value = SparseN(value)
+                # We will need to empty the slice before writing
+                S._zero()
+                for vi,vv in value:
+                    S._insert(vi,vv)
+            # Dense array source
+            else:
+                value = np.asarray(value)
+                if S.shape != value.shape:
+                    raise Exception('Cannot assign a tensor of shape {:s} to a slice of shape {:s}'.format(repr(value.shape), repr(S.shape)))
+                # There is no need to empty the slice since we're going to 
+                # write to all the elements anyway.
+                for ii,vv in zip(np.ndindex(value.shape), np.nditer(value)):
+                    S._insert(ii,np.asscalar(vv))
+                    
+        # If this is a scalar assignment
         else:
-            self.value[ii] = value
+            self._inrange(index)
+            self._insert(index, value)
     
     def __delitem__(self, index):
-        self._inrange(index)
-        found, ii = self._find_index(index)
-        if found:
-            del self.index[ii]
-            del self.value[ii]
+        # Check for slicing
+        isslice = False
+        for ii in index:
+            if isinstance(ii, slice):
+                isslice = True
+                break
+                
+        # If this is a slice deletion
+        if isslice:
+            if len(index) != self.ndim:
+                raise Exception("GETITEM: number of indices must match the tensor dimension")
+            
+            S = SliceSparseN(self, index)
+            for si in S.index:
+                found, ii = S._find_index(si)
+                del self.index[ii]
+                del self.value[ii]
+                    
+        # If this is a single deletion
+        else:
+            self._inrange(index)
+            found, ii = self._find_index(index)
+            if found:
+                del self.index[ii]
+                del self.value[ii]
     
     def __getitem__(self, index):
+        if len(index) != self.ndim:
+            raise Exception("GETITEM: number of indices must match the tensor dimension")
+        # Detect slices
+        for ii in index:
+            if isinstance(ii,slice):
+                return SliceSparseN(self, index)
+    
         self._inrange(index)
         found, ii = self._find_index(index)
         if not found:
             return 0.
         return self.value[ii]
+
         
     def __bool__(self):
         return bool(self.value)
@@ -114,7 +214,7 @@ Binary operations with scalars:
         
     def __add__(self, b):
         # If b is dense, use dense arithmatic
-        if isinstance(b, np.ndarray):
+        if isinstance(b, (np.ndarray, int, float)):
             c = self.todense()
             np.add(c,b,out=c)
             return c
@@ -130,18 +230,26 @@ Binary operations with scalars:
         if issubclass(type(b), SparseN):
             if b.shape != self.shape:
                 raise Exception('Addition and subtraction of tensors requires identical shapes.')
-            for bi, bvalue in zip(b.index, b.value):
-                self.increment(bi,bvalue)
+            # If the target and source share parentage, we'll need to make
+            # a copy before performing the operation
+            if self.getparent() is b.getparent():
+                b = SparseN(b)
+            for bi, bvalue in b:
+                self._increment(bi,bvalue)
         # Dense
         elif isinstance(b, np.ndarray):
             if b.shape != self.shape:
                 raise Exception('Addition and subtraction of tensors requires identical shapes.')
-            for bi in np.nditer(b):
-                self.increment(bi,b[bi])
+            for ii,bb in zip(np.ndindex(b.shape), np.nditer(b)):
+                self._increment(ii,bb)
         # Scalar
         else:
-            for ii in range(len(self.value)):
-                self.value[ii] += b
+            # The increment method looses knowledge of its location in
+            # the array after successive calls, so there are opportunities
+            # to improve performance here.
+            for index in np.ndindex(self.shape):
+                self._increment(index, b)
+        return self
         
     def __repr__(self):
         out = '<'
@@ -151,17 +259,11 @@ Binary operations with scalars:
         return out
         
     def __neg__(self):
-        b = SparseN(self.shape)
-        b.index = self.index.copy()
-        b.value = [-vv for vv in self.value]
-        # Note to my future self...
-        # If you change neg to work with a ThinSparseN, you need to change
-        # __rsub__, which relies on __neg__ to generate a copy for in-place
-        # subtraction.
-        return b
+        vmap = lambda vv: -vv
+        return ThinSparseN(self, vmap=vmap, vmapi = vmap)
         
     def __sub__(self, b):
-        if isinstance(b, np.ndarray):
+        if isinstance(b, (np.ndarray, int, float)):
             c = self.todense()
             np.subtract(c,b,out=c)
             return c
@@ -170,36 +272,43 @@ Binary operations with scalars:
         return c
         
     def __rsub__(self, b):
-        if isinstance(b, np.ndarray):
+        if isinstance(b, (np.ndarray, int, float)):
             c = self.todense()
             np.subtract(b,c,out=c)
             return c
-        c = self.__neg__()
-        c.__iadd__(b)
-        return c
+        return self.__neg__().__add__(b)
         
     def __isub__(self, b):
         # Sparse
         if issubclass(type(b), SparseN):
             if b.shape != self.shape:
                 raise Exception('Addition and subtraction of tensors requires identical shapes.')
-            for bi, bvalue in zip(b.index, b.value):
-                self.increment(bi,-bvalue)
+            # If the target and source share parentage, we'll need to make
+            # a copy before performing the operation
+            if self.getparent() is b.getparent():
+                b = SparseN(b)
+            for bi, bvalue in b:
+                self._increment(bi,-bvalue)
         # Dense
         elif isinstance(b, np.ndarray):
             if b.shape != self.shape:
                 raise Exception('Addition and subtraction of tensors requires identical shapes.')
-            for bi in np.nditer(b):
-                self.increment(bi,-b[bi])
+            for ii,bb in zip(np.ndindex(b.shape), np.nditer(b)):
+                self._increment(ii,-bb)
         # Scalar
         else:
-            for ii in range(len(self.value)):
-                self.value[ii] -= b
+            # The increment method looses knowledge of its location in
+            # the array after successive calls, so there are opportunities
+            # to improve performance here.
+            for index in np.ndindex(self.shape):
+                self._increment(index, -b)
+        return self
         
     def __mul__(self, b):
         # Vector/matrix/tensor products
-        if issubclass(type(b), SparseN) or isinstance(b, np.ndarray):
+        if isinstance(b, SparseN) or isinstance(b, np.ndarray):
             return self.dot(self.ndim-1, 0, b)
+        # Create a thin wrapper for scalar multiplication
         else:
             c = SparseN(self.shape)
             c.index = self.index.copy()
@@ -210,18 +319,23 @@ Binary operations with scalars:
         if issubclass(type(b), SparseN) or isinstance(b, np.ndarray):
             return self.dot(0, b.ndim-1, b)
         else:
-            c = SparseN(self.shape)
-            c.index = self.index.copy()
-            c.value = [b*vv for vv in self.value]
-            return c
+            return self.__mul__(b)
+        
+    def __iter__(self):
+        return SparseIter(self)
         
     def _inrange(self, index):
         """Tests the index tuple for the correct dimension and range"""
         if len(index) != self.ndim:
             raise Exception('SparseN tensor has %d dimensions, and requires the same number of indices.'%self.ndim)
         for ii, ss in zip(index,self.shape):
-            if ii < 0 or ii >= ss:
-                raise Exception('Index is out of range: %d'%index)
+            if isinstance(ii,slice):
+                pass
+            elif isinstance(ii,int):
+                if ii < 0 or ii >= ss:
+                    raise Exception('Index is out of range: %d'%index)
+            else:
+                raise Exception('Index is neither an integer or slice: {:s}'.format(repr(ii)))
     
     def _find_index(self, index, iimin=None, iimax=None):
         """Perform a bisection search on the index array
@@ -274,25 +388,16 @@ list where the target resides.
         # Unless the value isn't in the list.
         return (False, bb)
 
-    def nnz(self):
-        """Number of non-zero elements"""
-        return len(self.value)
-        
-    def copy(self):
-        """another_s = s.copy()
-    Makes a new object with copies of the data in the original object.
-"""
-        return SparseN(self)
-        
-    def increment(self, index, value):
-        """s.increment(index, value)
+    def _increment(self, index, value):
+        """s._increment(index, value)
     
 Increments an element of the matrix.  This is equivalent to
     s[index] += value
 but it only searches for the index once instead of twice through a call
-to __getitem__ and to __setitem__
+to __getitem__ and to __setitem__.  The __iadd__, __isub__, __add__, and
+__sub__ methods all use this as a tool to perform element-wise 
+operations efficiently.
 """
-        self._inrange(index)
         if value==0:
             return
         found,ii = self._find_index(index)
@@ -305,6 +410,76 @@ to __getitem__ and to __setitem__
             self.index.insert(ii, index)
             self.value.insert(ii, value)
             
+    def _insert(self, index, value):
+        """s._insert(index, value)
+        
+Places a value in the tensor.  If one already existed, it will be 
+overwritten.  If not, the lists will be updated appropriately.
+"""
+        found, ii = self._find_index(index)
+        if found:
+            self.value[ii] = value
+        else:
+            self.index.insert(ii, index)
+            self.value.insert(ii, value)
+            
+    def _zero(self):
+        """s._zero()
+        
+Removes all entries while ignoring the None values returned by slice
+instances.  This is equivalent to zeroing a tensor."""
+        self.index = []
+        self.value = []
+
+    def getparent(self):
+        """Returns the SparseN parent that holds the master data
+getparent recurses into nested ThinSparseN or SliceSparseN structures"""
+        if hasattr(self, "parent"):
+            return self.parent.getparent()
+        return self
+
+    def nnz(self):
+        """Number of non-zero elements"""
+        return len(self.value)
+        
+    def copy(self):
+        """another_s = s.copy()
+    Makes a new object with copies of the data in the original object.
+"""
+        return SparseN(self)
+        
+    def get(self, *index):
+        """GET  returns a value in the tensor
+    S.get(ii, jj, kk, ... )
+    
+Returns a scalar in the same way as __getitem__ except that slices are
+not supported.  This makes get slightly faster for uses in repeated 
+calls to unpatterned indices.  Otherwise, it is generally more efficient
+to use slices if possible.
+
+See also: set()
+"""
+        self._inrange(index)
+        found, ii = self._find_index(index)
+        if not found:
+            return 0.
+        return self.value[ii]
+        
+        
+    def set(self, value, *index):
+        """SET   assign a scalar value to a tensor element
+    S.set(value, ii, jj, kk, ... )
+
+Assigns a scalar value to an element of the tensor in the same way as 
+__setitem__ except that slices are not supported.  This makes set() 
+slighly faster for uses in repeated calls.
+
+See also: get()
+"""
+        self._inrange(index)
+        self._insert(index,value)
+            
+            
     def todense(self):
         """Return a dense copy of the tensor
     D = S.todense()
@@ -312,11 +487,11 @@ to __getitem__ and to __setitem__
 Be careful; large multi-dimensional tensors can require large amounts
 of memory in dense realizations."""
         d = np.zeros(self.shape)
-        for index,value in zip(self.index, self.value):
+        for index,value in self:
             d[index] = value
         return d
-        
-    def dot(self, adim, bdim, b, asdense=False):
+
+    def dot(self, adim, bdim, b):
         """Multiply two sparse tensors along the specified dimensions
     C = A.dot(adim, bdim, B)
     
@@ -332,12 +507,12 @@ is equivalent to
 The dims may be specified as integers or, to specify simultaneous 
 multiplication across multiple indices, as lists or tuples of integers.
 So, for the same tensors in the last example,
-    C = A.multiply(adims=(1,2), bdims=(0,1), B)
+    C = A.dot(adim=(1,2), bdim=(0,1), B)
 is equivalent to
     C[i,l] = sum_j sum_k A[i,j,k] * B[j,k,l]
 
 The order of the dimensions is also important.
-    C = A.multiply(adims=(1,2), bdims=(1,0), B)
+    C = A.dot(adim=(1,2), bdim=(1,0), B)
 is equivalent to
     C[i,l] = sum_j sum_k A[i,j,k] * B[k,j,l]
     
@@ -345,196 +520,78 @@ To force C to be a dense array, use the optional ASDENSE keywrod
 
     C = A.dot(adim, bdim, B, asdense=True)
 """
-        if hasattr(adim,'__iter__') and hasattr(bdim,'__iter__'):
+        if hasattr(adim,'__iter__') or hasattr(bdim,'__iter__'):
             adim = tuple(adim)
             bdim = tuple(bdim)
             if len(adim) != len(bdim):
-                raise Exception('adim and bdim must specify the same number of dimensions.')
+                raise Exception('DOT: adim and bdim must specify the same number of dimensions.')
         else:
-            adim = int(adim)
-            bdim = int(bdim)
+            # Force a single-element tuple
+            adim = (int(adim),)
+            bdim = (int(bdim),)
             
-        # There are four different execution cases:
-        #   If the input is sparse
-        #       --> and there are multiple specified dimensions
-        #       --> and there is a single dimension
-        #   If the input is dense
-        #       --> and there are multiple specified dimensions
-        #       --> and there is a single dimension
+        # Check for matching index lengths
+        if len(adim) != len(bdim):
+            raise Exception('DOT: adim and bdim must have the same length.')
+        
+        # Check that the dim indices are in-range and that the dimensions match
+        for ai in adim:
+            if ai < 0 or ai >= self.ndim:
+                raise Exception('DOT: Dimension on A not valid. Specified {:d}, only {:d} available.'.format(ai, len(self.shape)))
+        for bi in bdim:
+            if bi < 0 or bi >= b.ndim:
+                raise Exception('DOT: Dimension on B not valid. Specified {:d}, only {:d} available.'.format(bi, len(b.shape)))
+        for ai,bi in zip(adim,bdim):
+            if self.shape[ai] != b.shape[bi]:
+                raise Exception('DOT: Dimensions do not match A.shape[{:d}] = {:d}, B.shape[{:d}] = {:d}.'.format(ai,self.shape[ai],bi,b.shape[bi]))
 
-        # If B is sparse ...            
-        if issubclass(type(b), SparseN):
-            # Case out whether adim and bdim are scalars or array-like
-            # Generate a set of constants and helper functions that will handle 
-            # the multiplication
-            # _match(aindex, bindex)  Determine whether two indices should be multiplied
-            # _cindex(aindex, bindex) Generate a result index from the two product indices
-            # cshape                  The shape of the result tensor
+        # Build lists of the dimensions NOT being multiplied
+        # These are maps from the c dimensions to the corresponding a
+        # and b dimensions.
+        adim_not = []
+        for ai in range(self.ndim):
+            if ai not in adim:
+                adim_not.append(ai)
+                
+        bdim_not = []
+        for bi in range(b.ndim):
+            if bi not in bdim:
+                bdim_not.append(bi)
+        
+        # Build the result tensor
+        cshape = []
+        for ai in adim_not:
+            cshape.append(self.shape[ai])
+        for bi in bdim_not:
+            cshape.append(b.shape[bi])
+            
+        # Initialize the result
+        c = SparseN(cshape)
 
-            if isinstance(adim, tuple):
-                # Do some error checking on the dimensions
-                for ai in adim:
-                    if ai < 0 or ai >= self.ndim:
-                        raise Exception('adim index must be non-negative and within the dimension of A')
-                for bi in bdim:
-                    if bi < 0 or bi >= b.ndim:
-                        raise Exception('bdim index must be non-negative and within the dimension of B')
-                    
-                cdima = []  # list of dimensions from a and b that will be used
-                cdimb = []  # to build the cindex.
-                cshape = []
-                for ai in range(self.ndim):
-                    if ai not in adim:
-                        cdima.append(ai)
-                        cshape.append(self.shape[ai])
-                for bi in range(b.ndim):
-                    if bi not in bdim:
-                        cdimb.append(bi)
-                        cshape.append(b.shape[bi])
-                        
-                def _cindex(aindex, bindex):
-                    cindex = ()
-                    for ai in cdima:
-                        cindex += (aindex[ai],)
-                    for bi in cdimb:
-                        cindex += (bindex[bi],)
-                    return cindex
-                    
-                def _match(aindex, bindex):
-                    for ai,bi in zip(adim,bdim):
-                        if aindex[ai] != bindex[bi]:
-                            return False
-                    return True
-            else:
-                # Do some error checking on the dimensions
-                if adim < 0 or adim >= self.ndim:
-                    raise Exception('adim index must be non-negative and within the dimension of A')
-                if bdim < 0 or bdim >= b.ndim:
-                    raise Exception('bdim index must be non-negative and within the dimension of B')
-                    
-                def _match(aindex,bindex):
-                    return aindex[adim] == bindex[bdim]
-                def _cindex(aindex,bindex):
-                    return aindex[:adim] + aindex[adim+1:] + bindex[:bdim] + bindex[bdim+1:]
-                cshape = self.shape[:adim] + self.shape[adim+1:] + b.shape[:bdim] + b.shape[bdim+1:]
-            
-            # Initialize the result
-            if asdense:
-                c = np.zeros(cshape)
-            else:
-                c = SparseN(cshape)
-            # perform the multiplication
-            for aindex, avalue in zip(self.index, self.value):
-                for bindex, bvalue in zip(b.index, b.value):
-                    # Test for index agreement
-                    if _match(aindex, bindex):
-                        if asdense:
-                            c[cindex(aindex,bindex)] += avalue*bvalue
-                        else:
-                            c.increment(_cindex(aindex, bindex), avalue*bvalue)
-            
-        # If B is dense...
-        else:
-            # Force the input to be a numpy array
-            b = np.asarray(b)
+        # initialize indexes that will be used to perform the multiplication
+        bindex = [0] * b.ndim
+        cindex = [0] * c.ndim
 
-            # When B is dense, we will actually loop over the entire array
-            # _cindex()  Generate the cindex from aindex and bindex
-            # _nextb() Generates the next bindex from the one prior
-            if isinstance(adim,tuple):
-                # Do some error checking on the dimensions
-                for ai in adim:
-                    if ai < 0 or ai >= self.ndim:
-                        raise Exception('adim index must be non-negative and within the dimension of A')
-                for bi in bdim:
-                    if bi < 0 or bi >= b.ndim:
-                        raise Exception('bdim index must be non-negative and within the dimension of B')
-                        
-                cshape = [] # Solution tensor shape
-                cdima = []  # dimensions of a that contribute to cindex
-                cdimb = []  # dimensions of b that contribute to bindex
-                for ai in range(self.ndim):
-                    if ai not in adim:
-                        cshape.append(self.shape[ai])
-                        cdima.append(ai)
-                for bi in range(b.ndim):
-                    if bi not in bdim:
-                        cshape.append(b.shape[bi])
-                        cdimb.append(bi)
+        # The b-indices (and corresponding c-indices) that are not part of the
+        # inner product will always be full slices.
+        ci = len(adim_not)
+        for bi in bdim_not:
+            bindex[bi] = slice(None)
+            cindex[ci] = slice(None)
+            ci += 1
+        # using slices in Numpy's algorithms
+        # Loop over the sparse entries
+        for aindex,avalue in zip(self.index, self.value):
+            # construct the c- and b-indices
+            for ai,bi in zip(adim,bdim):
+                bindex[bi] = aindex[ai]
+            ci = 0
+            for ai in adim_not:
+                cindex[ci] = aindex[ai]
+                ci += 1
+            # Perform the product and increment the appropriate c-values
+            c[tuple(cindex)] += (avalue * b[tuple(bindex)])
                 
-                def _initb(aindex):
-                    bindex = [0]*b.ndim
-                    for ai,bi in zip(adim,bdim):
-                        bindex[bi] = aindex[ai]
-                    return bindex
-                
-                def _nextb(bindex):
-                    for ii,bi in enumerate(cdimb):
-                        bindex[bi] += 1
-                        if bindex[bi] < b.shape[bi]:
-                            return bindex
-                        bindex[bi] = 0
-                    return None
-                
-                def _cindex(aindex,bindex):
-                    cindex = ()
-                    for ai in cdima:
-                        cindex += (aindex[ai],)
-                    for bi in cdimb:
-                        cindex += (bindex[bi],)
-                    return cindex
-            else:
-                # Do some error checking
-                if adim < 0 or adim >= self.ndim:
-                    raise Exception('adim index must be non-negative and within the dimension of A')
-                if bdim < 0 or bdim >= b.ndim:
-                    raise Exception('bdim index must be non-negative and within the dimension of B')
-                    
-                cshape = []
-                cdimb = []
-                for ai in range(self.ndim):
-                    if ai != adim:
-                        cshape.append(self.shape[ai])
-                for bi in range(b.ndim):
-                    if bi != bdim:
-                        cshape.append(b.shape[bi])
-                        cdimb.append(bi)
-                
-                def _initb(aindex):
-                    bindex = [0]*b.ndim
-                    bindex[bdim] = aindex[adim]
-                    return bindex
-                
-                def _nextb(bindex):
-                    for ii,bi in enumerate(cdimb):
-                        bindex[bi] += 1
-                        if bindex[bi] < b.shape[bi]:
-                            return bindex
-                        bindex[bi] = 0
-                    return None
-                
-                def _cindex(aindex,bindex):
-                    return aindex[:adim] + aindex[adim+1:] + tuple(bindex[:bdim] + bindex[bdim+1:])
-            
-            if asdense:
-                c = np.zeros(cshape)
-            else:
-                c = SparseN(cshape)
-            
-            # Iterate over all nonzero values of self
-            for aindex, avalue in zip(self.index, self.value):
-                # Iterate over all corresponding indices of B
-                bindex = _initb(aindex)
-                while bindex is not None:
-                    # only operate on the value if the B value is non-zero
-                    bvalue = b[tuple(bindex)]
-                    if bvalue!=0:
-                        if asdense:
-                            c[_cindex(aindex,bindex)] += avalue*bvalue
-                        else:
-                            c.increment(_cindex(aindex,bindex), avalue * bvalue)
-                    bindex = _nextb(bindex)
-
         # All done
         return c
 
@@ -565,33 +622,37 @@ a and b are dimensions to transpose so that
         elif adim == bdim:
             return self
    
-        return ThinSparseN(self, shape=imap(self.shape), imap=imap)
+        # For transpososition, the index map is its own inverse, and it can be
+        # used to calculate the new shape.
+        return ThinSparseN(self, shape=imap(self.shape), imap=imap, imapi=imap)
             
+
 
 class VMap:
     """This is a wrapper class for the SparseN index and value lists.  
-It allows index and values to be re-mapped on the fly without requiring 
-data to be copied.  This is useful for resizing, reshaping, or 
-transposing sparse matricies efficiently.
+VMap simulates the behavior of a list, but it applies mapping and 
+inverse mapping functions to the values stored there before working with
+the values.  In this way, ThinSparseN can use VMap instances to mascarade
+as normal index and value lists for the rest of the built-in SparseN
+methods.
 
-    VM = VMap(imap, imapi, target)
+    VM = VMap(vmap, vmapi, target)
     
     
 VMAP
-    This is a callable index map function.  It maps indicies passed to a
-    ThinSparseN object into the original indicies.  
+    This is a callable value map function.  It maps values or indicies 
+    passed to a ThinSparseN object into the original values or indices.  
     It must be of the form: 
-        target_index_tuple = imap(index_tuple)
+        sparse_value = vmap(thin_sparse_value)
 
 VMAPI
-    This is a callable index map inverse function.  It maps indicies 
-    passed to the original SparseN object into the new indices passed to
-    the ThinSparseN object.  It must be of the form: 
-        index_tuple = imapi(target_index_tuple)
+    This is a callable value map inverse function.  It maps values or 
+    indices stored in the original SparseN object into the new values or
+    indices found in the ThinSparseN object.  It must be of the form: 
+        thin_sparse_value = vmapi(sparse_value)
 
 TARGET
-    This is the source list of tuples.  Each tuple is an N-dimensional 
-    sparse matrix index.
+    This is the source list of values of indices.
 """
     def __init__(self, vmap, vmapi, target):
         self.vmap = vmap
@@ -610,12 +671,143 @@ TARGET
     def __iter__(self):
         return map(self.vmapi, self.target)
         
+    def __len__(self):
+        return len(self.target)
+        
     def insert(self, index, value):
         self.target.insert(index, self.vmap(value))
         
     def copy(self):
+        """Make an explicit (static) copy of the list.  
+This will be a list and NOT a VMAP opject.
+
+    L = vmi.copy()
+    """
         return [ii for ii in self]
     
+
+class SliceSparseN(SparseN):
+    """A SliceSparseN contains no data, but forms a wrapper around a SparseN.
+The intent is to provide a thin wrapper that provides a slice mapping 
+into and out-of a SparseN tensor.  SliceSparseN is dissimilar from the
+ThinSparseN, because it can change the number of nonzero elements 
+available, but it does not provide a means to map or scale the values.
+
+    SS = SliceSparseN(parent, index)
+    
+PARENT is the target SparseN being sliced.
+
+INDEX is the tuple of indices and slices as would be passed to a 
+__getitem__ call.
+"""
+    def __init__(self, parent, index):
+        self.parent = parent
+        # check the indices for slices and scale them appropriately
+        # iset is the index and slice tuple used to construct this slice
+        self.iset = list(index)
+        # imap is a list of integers mapping the dimensions of this slice
+        # to the matching dimensions of the parent tensor
+        self.imap = []
+        # Shape is the reduced tensor shape
+        self.shape = []
+        for dim,ii in enumerate(self.iset):
+            if isinstance(ii,slice):
+                I = ii.indices(self.parent.shape[dim])
+                self.iset[dim] = I
+                self.imap.append(dim)
+                if I[1]>I[0]:
+                    self.shape.append((I[1] - I[0] - 1)//I[2]+1)
+                else:
+                    self.shape.append(0)
+        self.shape = tuple(self.shape)
+        # Write the normal SparseN interface members
+        self.ndim = len(self.shape)
+        self.size = np.product(self.shape)
+        self.index = VMap(self._imap, self._imapi, parent.index)
+        self.value = parent.value
+        # NOTE!!!
+        # This approach is a little dangerous, because it makes both the index
+        # and value arrays appear to have all the same elements as the parent
+        # BUT indices that do not belong to the slice will be returned as
+        # None.  The vast majority of methods in the SparseN class use 
+        # _find_index, so overloading that definition fixes most issues.
+        # However, some still need to iterate over all the elements. For that
+        # reason, the SparseIter class is written to be robust against None
+        # values in the index - it just skips over them, so the application
+        # is blind to the issue.
+        # 
+        # The virtue is that no redundant lists need to be maintained.  Instead,
+        # it is only important that SparseN algorithms be written sensitive to
+        # the problem.  __add__ and __sub__ for example should ONLY access 
+        # values and indices directly if they can be garanteed to be in a 
+        # SparseN and not a SliceSparseN instance.
+    
+    def _find_index(self, index, iimin=None, iimax=None):
+        return self.parent._find_index(self._imap(index), iimin=iimin, iimax=iimax)
+        
+    def _zero(self):
+        """s._zero()
+        
+Removes all entries while ignoring the None values returned by slice
+instances.  This is equivalent to zeroing a tensor."""
+        ii = 0
+        while ii < len(self.index):
+            if self.index[ii] is None:
+                ii += 1
+            else:
+                del self.index[ii]
+                del self.value[ii]
+        
+    def _match(self, index):
+        """Test a parent index for membership in the slice"""
+        for ii,adj in zip(index, self.iset):
+            if isinstance(adj, tuple):
+                if ii >= adj[1] or ii < adj[0] or (ii-adj[0])%adj[2]:
+                    return False
+            elif ii != adj:
+                return False
+        return True
+        
+    def _imap(self, index):
+        """Map a slice index to its equivalent parent index
+        
+Since slices always contain a subset of their parents, this should always 
+return a valid value.
+"""
+        parent_index = list(self.iset)
+        # Adjust the index to the parent dimensions
+        for dim,ii in enumerate(index):
+            # imap maps each of the slice dimensions to their original dimension in the parent
+            imap = self.imap[dim]
+            # adj is the three-element tuple constructed from the slice
+            adj = self.iset[imap]
+            # Finally, adjust the index to its value in the parent
+            parent_index[imap] = adj[0] + adj[2]*ii
+        return tuple(parent_index)
+        
+    def _imapi(self, parent_index):
+        """Map a parent index back to the slice index. Return None if it is not a member.
+        
+Since slices contain a subset of their parents, not all parent entries will
+appear in the slice.  When these indices are passed to _imapi, None is 
+returned."""
+        if not self._match(parent_index):
+            return None
+        index = []
+        for dim,pdim in enumerate(self.imap):
+            adj = self.iset[pdim]
+            ii = parent_index[pdim]
+            index.append( (ii-adj[0])//adj[2] )
+        return tuple(index)
+        
+    def nnz(self):
+        """Number of non-zero elements"""
+        out = 0
+        for index in self.parent.index:
+            out += self._match(index)
+        return out
+      
+        
 
 class ThinSparseN(SparseN):
     """A ThinSparseN contains no data, but forms a wrapper around a SparseN.
@@ -627,7 +819,8 @@ operations to the child will affect the parent and vice versa.
     TS = ThinSparseN(parent, shape, imap, imapi, vmap, vmapi)
 
 The parent SparseN is required, but the three optional keyword arguments
-define the mapping.
+define the mapping.  The mapping MAY NOT change the number of nonzero 
+elements.  It MAY change the tensor's shape and/or dimension.
 
 SHAPE is a tuple defining the shape of the new tensor.  If it is not 
 explicitly specified, it will be inherited from the parent SparseN.  If there is
@@ -656,48 +849,64 @@ funcitonal object.  User beware!
         
         # Who is the parent?
         self.parent = S
-        # If the index map is defined, then set up the index re-mapping
-        if imap and imapi is None:
-             imapi = imap
-        elif imap is None and imapi:
-            raise Exception('If IMAPI is defined, then IMAP must be defined.')
 
-        if vmap and vmapi is None:
-            vmapi = vmap
-        elif vmap is None and vmapi:
-            raise Exception('If VMAPI is defined, then VMAP must be defined.')
-
-        # Remember the index maps
-        self.imap = imap
-        self.imapi = imapi
-        self.vmap = vmap
-        self.vmapi = vmapi
-        
         # If shape is explicitly defined, use that.  Otherwise, inherit shape from the parent.
-        # Calling the SparseN initializer will define ndim, size, and
-        # other useful constants.
         if shape:
             SparseN.__init__(self, shape)
-        elif imapi is None:
-            SparseN.__init__(self, S.shape)
         else:
-            SparseN.__init__(self, imapi(S.shape))
+            SparseN.__init__(self, S.shape)
         
         # This MUST come last because it overwrites value and index
-        if imap:
+        # Test for index maps
+        if imap and imapi:
             self.index = VMap(imap, imapi, S.index)
             self._find_index = self._find_index_wrapper
+        elif imap or imapi:
+            raise Exception("ThinSparseN: Both IMAP and IMAPI must be specified.")
         else:
             self.index = S.index
-            
-        if vmap:
+        
+        # Test for value maps
+        if vmap and vmapi:
             # Note that the mapping is reversed from the indices
             self.value = VMap(vmapi, vmap, S.value)
+        elif vmap or vmapi:
+            raise Exception("ThinSparseN: Both VMAP and VMAPI must be specified.")
         else:
             self.value = S.value
 
     def _find_index_wrapper(self, index, iimin=None, iimax=None):
-        return self.parent._find_index(self.imap(index), iimin=iimin, iimax=iimax)
+        return self.parent._find_index(self.index.vmap(index), iimin=iimin, iimax=iimax)
     
+    def _isparent(self, target):
+        """Returns True if the target is a parent of self
+    _isparent recurses into sparse or thin parents to discover parentage.
+"""
+        if target is self:
+            return True
+        return self.parent._isparent(target)
+    
+    
+class SparseIter:
+    """An iterator class for sparse tensors
 
+for index,value in SparseIter(S):
+    ...
     
+Returns the index and values like using zip(), but this iterator skips
+the None index entries encountered in SliceSparseN instances.
+"""
+    def __init__(self, target):
+        self.index = target.index.__iter__()
+        self.value = target.value.__iter__()
+        
+    def __iter__(self):
+        return self
+        
+    def __next__(self):
+        index = None
+        value = None
+        while index is None:
+            index = self.index.__next__()
+            value = self.value.__next__()
+        return (index,value)
