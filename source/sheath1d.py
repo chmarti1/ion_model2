@@ -973,8 +973,8 @@ class Sheath1D(Ion1D):
     """The Sheath1D class models the sheath in a stagnation problem
     
 An execution of the model might appear
->>> M = FiniteIon1D()
->>> M.init_param( z1, z2, ... other params ...)
+>>> M = Sheath1D()
+>>> M.init_param( ... params ... )
 >>> M.init_grid( ... )
 >>> M.init_mat()
 >>> M.init_solution()
@@ -991,29 +991,28 @@ ion generation rate 1/(z2-z1).  By necessity, 0 <= z1 < z2 <= 1.
         
     def init_param(self, arg=None, **kwarg):
         """FiniteIon1D model parameter initialization
-    M.init_param(z1=z1, z2=z2, ...)
+    M.init_param( ... )
         OR
     M.init_param( param_obj )
         OR
-    M.init_param({'z1':z1, 'z2':z2, ...})
+    M.init_param({'alpha':alpha, 'beta':beta, ...})
     
 init_param() accepts individual keyword, value pairs or an IonParam object, or
 a dictionary with keyword, value pairs.
 
-Required parameters:
-z1, z2      These are the locations where the formation region begins and ends.
-            init_param enforces  0 < z1 < z2 < 1
-            
 Optional parameters and their defaults:
+formation   A True/False switch to turn on and off ion formation (True)
+convection  A True/False switch to turn on and off convection (True)
 R           Positive ion Reynolds number (2500.)
-alpha       Dimensionless Debye length (1e-3)
-beta        Dimensionless inverse recombination length (10.)
+alpha       Dimensionless velocity length scale (1.)
+beta        Dimensionless formation length scale (1.)
 mu          Negative-to-positive species mobility ratio (200.)
 tau         Negative-to-positive temperature ratio (1.)
-phia        Dimensionless applied voltage (0.)
+psi         Electric field strength in the neutral plasma (0.)
+omega       Dimensionless formation rate in the sheath (1/beta**2)
 
 Derived parameters:
-omega       Formation rate = 1./(z2-z1).  User values are overwritten.
+omega       If omega is not specified, it will be calculated from beta
 """
         if self.initstate > 0:
             print('INIT_PARAM::WARNING: Parameters already seem to be implemented! Changes may have no effect.')
@@ -1025,23 +1024,20 @@ omega       Formation rate = 1./(z2-z1).  User values are overwritten.
         p.beta = 10.
         p.mu = 200.
         p.tau = 1.
-        p.phia = 0.
-        p.z1 = None
-        p.z2 = None
+        p.psi = 0.
+        p.formation = True
+        p.convection = True
+        p.omega = None
+
         # Read in the arguments
         if arg is not None:
             p.set(arg)
         if kwarg:
             p.set(kwarg)
         
-        # Test z1 and z2
-        if p.z1 is None or p.z2 is None:
-            raise Exception('FiniteIon1D.init_param(): z1 and z2 parameters are required.')
-        elif not (0 < p.z1 < p.z2 < 1):
-            raise Exception('FiniteIon1D.init_param(): z1 and z2 parameters do not obey: 0 < z1 < z2 < 1.')
-            
-        # Force the omega value last (just in case the user tried to write it in kwarg)
-        p.omega = 1./(p.z2-p.z1)
+        # Force the formation rate to be 1/beta**2
+        if p.omega is None:
+            p.omega = 1./(p.beta*p.beta)
 
 
     def init_grid(self, d, r=None):
@@ -1050,63 +1046,39 @@ omega       Formation rate = 1./(z2-z1).  User values are overwritten.
         OR
     M.init_grid( d )
         OR
-    M.init_grid( (d0, d1, d2) )
-        OR
-    M.init_grid( d, (r0, r1, r2, r3) )
+    M.init_grid( d, (r0, r1) )
 
 ** Required arguments: 
     z
-If the only argument is a numpy array, it will be treated as the node locations to
-use.  Be warned: if z1 and z2 values are not found in z, an Exception will be raised.
+If the only argument is a numpy array, it will be treated as the node 
+locations to use.  It must be an array of values ranging from zero to 
+one.
     
-    d OR d=(d0, d1, d2)
-If d is a single scalar value, it is interpreted as the approximate uniform node 
-spacing everywhere in the solution domain.  If d is an array-like type, it is
-expected to contain three elements that will be interpreted as the node spacing 
-in sub-domains 
-    d[0] : 0 <= z < z1 (upstream of the reaction zone), 
-    d[1] : z1 <= z <= z2 (in the reaction zone),
-    d[2] : z2 <= z <= 0 (downstream of the reaction zone)
-
-The actual node spacing will be adjusted to allow the node 
+    d
+If d is the approximate uniform node spacing everywhere in the solution 
+domain.  The actual node spacing will be adjusted to allow an integer
+number of equally spaced nodes, and further adjusted to honor the 
+relative grid spacing parameter, r.
 
 ** Optional arguments: 
-    r = (r0, r1, r2, r3)
-Regardless of how many d-values are supplied, the optional r[X] keyword 
-arguments enhance the relative node spacing at the boundaries of the sub-domains
+    r = (r0, r1)
+The optional r[X] keyword arguments enhance the relative node spacing at
+the domain boundaries.
 (see diagram).  
-    r0 : z=0 (upstream boundary)
-    r1 : z=z1 (beginning of the reaction region)
-    r2 : z=z2 (end of the reaction region)
-    r3 : z=1 (domain end)
+    r0 : z=0 (stagnation boundary)
+    r1 : z=1 (upstream boundary)
 
 ** How is the grid calculated?
-The domain [0,1] is divided into three sub-domains formed by the reaction region
-z1 and z2.  In each a cubic grid (see the ion1d.cubicgrid() function) is used 
-to construct a piece-wise continuous distribution of node points.  The node 
-spacing is adjusted at the interfaces z1 and z2 so that there are no sharp 
-discontinuities in node spacing.
+Unlike the original Ion1D use cases that employed a three-piece-wise 
+domain, the Sheath1D model uses a single domain with no internal 
+boundaries.  The cubicgrid() function is used explicitly.
 
-The diagram below shows the sub-domains and the arguments that affect them.
-    
- r0   d0    r1       d1         r2              d2                  r3
- |          |                   |                                   |
- +----------+-------------------+-----------------------------------+
-z=0        z=z1                z=z2                                z=1
-
-The node spacing in each of the sub-domains will not always be exactly what is 
-specified.  The algorithm will adjust the actual spacing so that nodes always 
-fall exactly on z=z1 and z=z2.  The algorithm stores the indices corresponding 
-to z=z1 and z=z2 in k[0] and k[1] respectively.
-
-At the interfaces, the nominal grid spacing will be the average of that of the
-neighboring sub-domains.  That can be modified by assinging a value to the 
-appropriate rX parameter.  For example, the nominal node spacing at z=z1 is 
-calculated r1 * 0.5 * (d0 + d1), so r1 = 1 does not affect the grid spacing, but
-r1 = 0.5 would double the node density.
-
-It should be emphasized that the actual grid spacing will vary significantly to 
-prevent discontinuities and to accommodate the r parameters.
+The relative grid spacing, r0 and r1, are used to enhance the density of
+nodes near the boundaries.  For example, when r0=2, r1=1, the grid 
+density at the stagnation is double its nominal value specified by d and
+the grid spacing upstream is approximately its nominal spacing.  It is
+important to recognize that this will implicitly reduce the grid density
+in the middle of the domain.
 
 ** What does a raised Exception mean?
 Grid generation can fail if the cubic function is forced into non-monotonic 
@@ -1127,71 +1099,24 @@ more uniform grid spacings or by experimenting with different r-values.
 
         # If d is a numpy array, it is an explicit grid definition
         if isinstance(d, np.ndarray):
-            # Find z1 and z2
-            k0 = d.searchsorted(p.z1)
-            if d[k0] != p.z1:
-                raise Exception('FiniteIon1D.init_grid(): Did not find z1 in explicit grid definition.')
-            k1 = d.searchsorted(p.z2)
-            if d[k1] != p.z2:
-                raise Exception('FiniteIon1D.init_grid(): Did not find z2 in explicit grid definition.')
             self.z = d
-            self.k = [k0, k1]
             self.initstate=1
             return
             
-        # Assign spacing to each of the sub-domains
-        # If d is an array-like, 
-        if hasattr(d, '__iter__'):
-            try:
-                d0,d1,d2 = d
-                d0 = float(d0)
-                d1 = float(d1)
-                d2 = float(d2)
-            except:
-                raise Exception('Multiple grid distances should be a three-element array-like of floats')
-        # If d is a scalar
-        else:
-            try:
-                d0 = d1 = d2 = float(d)
-            except:
-                raise Exception('If d is a scalar, it must be convertible to a float')
+        
         # Assign relative spacing to each of the sub-domain boundaries
         if r is None:
-            r0 = r1 = r2 = r3 = 1.
+            r0 = r1 = 1.
         else:
             try:
-                r0,r1,r2,r3 = r
+                r0,r1 = r
                 r0 = float(r0)
                 r1 = float(r1)
-                r2 = float(r2)
-                r3 = float(r3)
             except:
                 raise Exception('If r is specified, it must be a four-element array-like of floats')
         
-        # Modify the nominal grid spacing to arrive at element counts
-        N1 = int(np.ceil(p.z1 / d0))
-        N2 = int(np.ceil((p.z2-p.z1) / d1))
-        N3 = int(np.ceil((1.-p.z2) / d2))
-        
-        # Calculate the spacing at the two interfaces
-        d01 = r1 * 0.5 * (d0+d1)
-        d12 = r2 * 0.5 * (d1+d2)
-        
-        try:
-            zz1 = p.z1*cubicgrid(N1, r0, d01/d0, stop=False)
-        except:
-            raise Exception('These settings caused the up-stream zone (0<=z<z1) to be non-monotonic.  Try new values for d0, d1, or r1.')
-        try:
-            zz2 = p.z1 + (p.z2-p.z1)*cubicgrid(N2, d01/d1, d12/d1, stop=False)
-        except:
-            raise Exception('These settings caused the reaction zone (z1<=z<z2) to be non-monotonic.  Try new values for d or r.')
-        try:
-            zz3 = p.z2 + (1.-p.z2)*cubicgrid(N3, d12/d2, r3)
-        except:
-            raise Exception('These settings caused the down-stream zone (z2<=z<=1) to be non-monotonic.  Try new values for d1, d2, or r2.')
-            
-        self.z = np.concatenate((zz1,zz2,zz3))
-        self.k = [N1, N1+N2]
+        N = int(np.ceil(1./d))
+        self.z = cubicgrid(N, r1, r2, start=True, stop=True)
         self.initstate = 1
 
     def init_mat(self):
