@@ -1019,8 +1019,6 @@ init_param() accepts individual keyword, value pairs or an IonParam object, or
 a dictionary with keyword, value pairs.
 
 Optional parameters and their defaults:
-formation   A True/False switch to turn on and off ion formation (True)
-convection  A True/False switch to turn on and off convection (True)
 R           Positive ion Reynolds number (4.)
 alpha       Dimensionless velocity length scale (1.)
 beta        Dimensionless secondary ion formation length scale (1.)
@@ -1031,6 +1029,10 @@ omega       Dimensionless formation rate in the sheath (1/beta**2)
 
 Derived parameters:
 omega       If omega is not specified, it will be calculated from beta
+
+To deactivate effects from convection or formation, set R or omega to 
+zero respectively.  The init_mat() method will automatically detect the
+condition, and make the appropriate simplifications.
 """
         if self.initstate > 0:
             print('INIT_PARAM::WARNING: Parameters already seem to be implemented! Changes may have no effect.')
@@ -1151,11 +1153,27 @@ be obvious.  It is usually caused because r-values are too far from unity.
         
         p = self.param
         
-        # Calculate the electric reynolds number
-        Re = p.R / p.mu
-        # Calculate the velocity and formation functions
-        self.u = -1. + (1-self.z)**(1./p.alpha)
-        self.w = (1-self.z)**(1./p.beta)
+        # Calculate a velocity array
+        if p.R > 0:            
+            # Calculate the electric reynolds number
+            Re = p.R / p.mu
+            
+            # Calculate the velocity and formation functions
+            self.u = -1. + (1-self.z)**(1./p.alpha)
+        else:
+            Re = 0.
+            self.u = np.broadcast_to(0., self.z.shape)
+            
+        # Calculate a formation rate array
+        # ww is the modified formation rate array that includes the
+        # 1/(1-z) term.  It is important not to divide by 1-z explicitly
+        # since it will be singular at z=1.
+        if p.omega > 0:
+            self.w = (1-self.z)**(1./p.beta)
+            ww = p.omega * (1-self.z) ** (1./p.beta - 1.)
+        else:
+            self.w = np.broadcast_to(0., self.z.shape)
+            ww = np.broadcast_to(0., self.z.shape)
         
         # How big are the tensors?
         N = 3*self.z.size
@@ -1175,7 +1193,6 @@ be obvious.  It is usually caused because r-values are too far from unity.
 
             zk = self.z[k]
             uk = self.u[k]
-            wk = self.w[k]
             
             # Calculate the derivative coefficients
             c,cp,cpp = self.dz(k)
@@ -1183,9 +1200,10 @@ be obvious.  It is usually caused because r-values are too far from unity.
             # The first index indicates which equation is being 
             # represented. etak refers to the conservation of positive
             # ions at node k.
-            ww = (1-zk) ** (1./p.beta - 1.)
-            self.C[etak] = p.omega*ww
-            self.C[nuk] = p.omega*ww/p.mu
+            if p.omega>0:
+                self.C[etak] = ww[k]
+                self.C[nuk] = ww[k]/p.mu
+            
             
             # The second index indicates which node coefficient is 
             # being accessed.  Since a node is only dependent on itself
