@@ -208,6 +208,7 @@ import numpy as np
 from miscpy import sparsen as spn
 from scipy import sparse as spsp
 from scipy.sparse import linalg as spla
+from scipy.integrate import cumtrapz
 from miscpy import sparsen as spn
 import matplotlib.pyplot as plt
 import os, json, shutil, tempfile, tarfile
@@ -836,14 +837,36 @@ ypp = np.dot(Y, Cpp)
 Because the coefficient vectors are only a function of the grid, they do
 not need to be re-evaluated during the iteration.
 """
-        d10 = self.z[index+1] - self.z[index]
-        d0_1 = self.z[index] - self.z[index-1]
-        d1_1 = d10 + d0_1
-        c0 = np.array([0, 1, 0], dtype=float)
-        c1 = np.array([
-            -d10/d0_1/d1_1,
-            1/d0_1 - 1/d10,
-            d0_1/d1_1/d10])
+        # Case out c0, c1, and c2.  If the index is on one of the edges
+        # the interpolation functions are evaluated differently!
+        if index == 0:
+            d10 = self.z[index+2] - self.z[index+1]
+            d0_1 = self.z[index+1] - self.z[index]
+            d1_1 = d10 + d0_1
+            c0 = np.array([1, 0, 0], dtype=float)
+            c1 = np.array([
+                -1./d1_1 - 1./d0_1,
+                d1_1/d0_1/d10,
+                -d0_1/d1_1/d10])
+        elif index == self.z.size-1:
+            d10 = self.z[index] - self.z[index-1]
+            d0_1 = self.z[index-1] - self.z[index-2]
+            d1_1 = d10 + d0_1
+            c0 = np.array([0, 0, 1], dtype=float)
+            c1 = np.array([
+                d10/d1_1/d0_1,
+                -d1_1/d0_1/d10,
+                -d0_1/d1_1/d10])
+        else:
+            d10 = self.z[index+1] - self.z[index]
+            d0_1 = self.z[index] - self.z[index-1]
+            d1_1 = d10 + d0_1
+            c0 = np.array([0, 1, 0], dtype=float)
+            c1 = np.array([
+                -d10/d0_1/d1_1,
+                1/d0_1 - 1/d10,
+                d0_1/d1_1/d10])
+        # The second derivative is always the same
         c2 = np.array([
             2/d0_1/d1_1,
             -2/d10/d0_1,
@@ -871,17 +894,11 @@ C is always the identity matrix.
         Cp = spsp.lil_matrix((N,N))
         Cpp = spsp.lil_matrix((N,N))
         
+        _,Cp[0,:3],Cpp[0,:3] = self.dz(0)
         for k in range(1,N-1):
             _, Cp[k,k-1:k+2], Cpp[k,k-1:k+2] = self.dz(k)
-            
+        _,Cp[N-1,N-3:],Cpp[N-1,N-3:] = self.dz(N-1)
         
-        dz = self.z[1] - self.z[0]
-        Cp[0, :2] = [-1/dz, 1/dz]
-        dz = self.z[-1] - self.z[-2]
-        Cp[N-1, :2] = [-1/dz, 1/dz]
-        
-        Cpp[0,:3] = Cpp[1, :3]
-        Cpp[N-1, N-3:] = Cpp[N-2, N-3:]
         
         Cp.tocsr()
         Cpp.tocsr()
@@ -1051,13 +1068,14 @@ init_param() accepts individual keyword, value pairs or an IonParam object, or
 a dictionary with keyword, value pairs.
 
 Optional parameters and their defaults:
-R           Positive ion Reynolds number (4.)
+R           Positive ion Reynolds number (1.)
 alpha       Dimensionless velocity length scale (1.)
 beta        Dimensionless secondary ion formation length scale (1.)
+gamma       Dimensionless domain compression ratio (1.)
 mu          Negative-to-positive species mobility ratio (200.)
 tau         Negative-to-positive temperature ratio (1.)
 psia        Electric field strength in the neutral plasma (0.)
-omega       Dimensionless formation rate in the sheath
+omega       Dimensionless formation rate in the sheath (0.)
 
 To deactivate effects from convection or formation, set R or omega to 
 zero respectively.  The init_mat() method will automatically detect the
@@ -1068,9 +1086,10 @@ condition, and make the appropriate simplifications.
 
         p = self.param
         # Set some model defaults
-        p.R = 4.
+        p.R = 1.
         p.alpha = 1.
         p.beta = 1.
+        p.gamma = 1.
         p.mu = 200.
         p.tau = 1.
         p.psia = 0.
@@ -1220,12 +1239,15 @@ be obvious.  It is usually caused because r-values are too far from unity.
             # Calculate the derivative coefficients
             c,cp,cpp = self.dz(k)
             
+            # Find the velocity derivative
+            duk = np.dot(cp, self.u[k-1:k+2])
+            
             # The first index indicates which equation is being 
             # represented. etak refers to the conservation of positive
             # ions at node k.
             if p.omega>0:
-                self.C[etak] = ww[k]
-                self.C[nuk] = ww[k]/p.mu
+                self.C[etak] = ww[k]*p.gamma
+                self.C[nuk] = ww[k]*p.gamma/p.mu
             
             
             # The second index indicates which node coefficient is 
@@ -1233,11 +1255,15 @@ be obvious.  It is usually caused because r-values are too far from unity.
             # and its immediate neighbors, etak-1:eta+2 spans all 
             # relevant nodes.
             # ::Linear terms in the eta equation
-            self.L[etak,etak-1:etak+2] = -(1 + p.R*uk)*cp + (1-zk)*cpp            
+            self.L[etak,etak-1:etak+2] = -(1/p.gamma + p.R*uk)*cp \
+                - p.R*duk*c \
+                + (1-zk)/p.gamma*cpp
             # ::Linear terms in the nu equation
-            self.L[nuk,nuk-1:nuk+2] = -(1 + Re*uk)*cp + (1-zk)*cpp
+            self.L[nuk,nuk-1:nuk+2] = -(1/p.gamma + Re*uk)*cp \
+                - Re*duk*c \
+                + (1-zk)/p.gamma*cpp
             # :: Linear terms in the psi equation
-            self.L[psik,psik-1:psik+2] = (1-zk)*cp
+            self.L[psik,psik-1:psik+2] = (1-zk)/p.gamma*cp
             self.L[psik,etak] = 1.
             self.L[psik,nuk] = -1.
             
@@ -1293,9 +1319,8 @@ and the total error history, ee
         self.nuE = self.E[N:2*N]
         self.psiE = self.E[2*N:3*N]
         
-        y = np.linspace(0,1,N)
-        self.eta[:] = y
-        self.nu[:] = y
+        self.eta[:] = self.z + 0.9*self.z*(1-self.z)
+        self.nu[:] = self.z - 0.9*self.z*(1-self.z)
         self.psi[:] = self.param.psia
         
         self.E[:] = self.C \
@@ -1322,6 +1347,7 @@ the C, L, or Q system tensors.
         R = self.param.R
         Re = self.param.R / mu
         tau = self.param.tau
+        gam = self.param.gamma
         
         z = self.z
         u = self.u
@@ -1330,20 +1356,22 @@ the C, L, or Q system tensors.
         
         C,Cp,Cpp = self.dZ()
         
-        etaE = -(1 + R*u) * (Cp * self.eta) \
+        etaE = -(1./gam + R*u) * (Cp * self.eta) \
+                - R * self.eta * (Cp * u) \
                 + tau * self.eta * (Cp * self.psi) \
                 + tau * self.psi * (Cp * self.eta) \
-                + (1-z) * (Cpp * self.eta) \
-                + omega * ww
+                + (1-z)/gam * (Cpp * self.eta) \
+                + omega*gam * ww
                 
-        nuE = -(1 + Re*u) * (Cp * self.nu) \
+        nuE = -(1./gam + Re*u) * (Cp * self.nu) \
+                - Re * self.nu * (Cp * u) \
                 - self.nu * (Cp * self.psi) \
                 - self.psi * (Cp * self.nu) \
                 + (1-z) * (Cpp * self.nu) \
-                + omega / mu * ww
+                + omega*gam / mu * ww
 
-        psiE = self.nu - self.eta - (1-z) * (Cp * self.psi)
-                
+        psiE = self.nu - self.eta - (1-z)/gam * (Cp * self.psi)
+        
         return etaE, nuE, psiE
 
 class AnchoredFiniteIon1D(Ion1D):
@@ -1921,6 +1949,20 @@ ndarrays are replaced with the output of repr().
                 os.remove(postfile_full)
 
     def expand_post(self):
+        """Generate post-processing data in members
+        
+    u       Dimensionless velocity vector
+    w       Dimensionless formation vector
+    
+    eta1    
+    nu1     Perturbation solution for eta, nu, and psi
+    psi1
+    
+    phi     Dimensionless voltage
+    phi1    Perturbed voltage
+    
+    
+"""
 
         N = self.z.size
         # Point to the parameters
@@ -1967,27 +2009,30 @@ ndarrays are replaced with the output of repr().
             psi_k = nu_k + N
             zk = self.z[k]
             uk = self.u[k]
+            duk = np.dot(cp, self.u[k-1:k+2])
             wk = self.w[k]
             
-            A[eta_k, eta_k-1:eta_k+2] = -(1 + p.R*uk) * cp \
+            A[eta_k, eta_k-1:eta_k+2] = -(1/p.gamma + p.R*uk) * cp \
+                    - p.R * duk * c \
                     + p.tau * np.dot(c,p_) * cp \
                     + p.tau * np.dot(cp,p_) * c \
-                    + (1-zk) * cpp
+                    + (1-zk)/p.gamma * cpp
                     
             A[eta_k, psi_k-1:psi_k+2] = p.tau * np.dot(c, e_) * cp \
                     + p.tau * np.dot(cp, e_) * c
                     
-            A[nu_k, nu_k-1:nu_k+2] = -(1 + Re*uk) * cp \
+            A[nu_k, nu_k-1:nu_k+2] = -(1./p.gamma + Re*uk) * cp \
+                    - Re * duk * c \
                     - np.dot(c,p_) * cp \
                     - np.dot(cp,p_) * c \
-                    + (1-zk) * cpp
+                    + (1-zk)/p.gamma * cpp
                     
             A[nu_k, psi_k-1:psi_k+2] = - np.dot(c, n_) * cp \
                     - np.dot(cp, n_) * c
                     
             A[psi_k, eta_k] = -1
             A[psi_k, nu_k] = 1
-            A[psi_k, psi_k-1:psi_k+2] = -(1-zk) * cp
+            A[psi_k, psi_k-1:psi_k+2] = -(1-zk)/p.gamma * cp
             
         # Set up the boundary conditions
         eta_k = 0
@@ -2024,6 +2069,16 @@ ndarrays are replaced with the output of repr().
         self.nu1 = X1[N:2*N]
         self.psi1 = X1[2*N:]
 
+        # calculate the transport balance
+        c,cp,cpp = self.dZ()
+        
+        self.Fiu = p.R * self.u * self.eta
+        self.Fid = -(1-self.z)/p.gamma * (cp * self.eta)
+        self.Fim = -p.tau * self.eta * self.psi
+        self.Feu = p.R * self.u * self.nu
+        self.Fed = -p.mu/p.gamma * (1-self.z) * (cp * self.nu)
+        self.Fem = p.mu * self.nu * self.psi
+        
         
 
     def diff(self, y, second=False):
@@ -2035,51 +2090,21 @@ ndarrays are replaced with the output of repr().
         dy = np.ndarray(self.z.shape)
         N = self.z.size
         
-        # Move on to the internal nodes
-        for k in range(1,N-1):
-            # Calculate the interpolation function derivatives
-            dz10 = self.z[k] - self.z[k-1]
-            dz21 = self.z[k+1] - self.z[k]
-            dz20 = dz10 + dz21
-            
-            ap = - dz21 / (dz10 * dz20)
-            bp = (dz21 - dz10)/(dz10 * dz21)
-            cp = dz10 / (dz20 * dz21)
-            
-            app = 2 / (dz10 * dz20)
-            bpp = -2 / (dz10 * dz21)
-            cpp = 2 / (dz20 * dz21)
-            
-            dy[k] = ap * y[k-1] + bp * y[k] + cp * y[k+1]
-            
-        # Deal with the end-points
-        # Start at the boundary node z=0
-        dz10 = self.z[1] - self.z[0]
-        dz21 = self.z[2] - self.z[1]
-        dz20 = dz21 + dz10
-        # Use only the two boundary nodes to construct the derivative
-        ap = -(dz10 + dz20)/(dz20 * dz10)
-        bp = dz20/(dz10*dz21)
-        cp = -dz10/(dz20*dz21)
-
-        app = 2 / (dz10 * dz20)
-        bpp = -2 / (dz10 * dz21)
-        cpp = 2 / (dz20 * dz21)
+        if second:
+            _,_,cpp = self.dz(0)
+            dy[0] = np.dot(cpp, y[:3])
+            for k in range(1,N-1):
+                _,_,cpp = self.dz(k)
+                dy[k] = np.dot(cpp, y[k-1:k+2])
+            _,_,cpp = self.dz(N-1)
+            dy[N-1] = np.dot(cpp, y[k-3:])
+        else:
+            _,cp,_ = self.dz(0)
+            dy[0] = np.dot(cp, y[:3])
+            for k in range(1,N-1):
+                _,cp = self.dz(k)
+                dy[k] = np.dot(cp, y[k-1:k+2])
+            _,cp,_ = self.dz(N-1)
+            dy[N-1] = np.dot(cp, y[k-3:])
         
-        dy[0] = ap * y[0] + bp * y[1] + cp * y[2]
-        
-        # Finish at the boundary node z=1
-        dz10 = self.z[-2] - self.z[-3]
-        dz21 = self.z[-1] - self.z[-2]
-        dz20 = dz21 + dz10
-        ap = dz21/(dz20*dz10)
-        bp = -dz20/(dz10*dz21)
-        cp = (dz20 + dz21)/(dz20*dz21)
-
-        # Reach in one extra node to construct the second derivative
-        app = 2 / (dz10 * dz20)
-        bpp = -2 / (dz10 * dz21)
-        cpp = 2 / (dz20 * dz21)
-        
-        dy[-1] = ap * y[-3] + bp * y[-2] + cp * y[-1]
         return dy
