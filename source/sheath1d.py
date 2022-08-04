@@ -211,7 +211,7 @@ from scipy.sparse import linalg as spla
 from scipy.integrate import cumtrapz
 from miscpy import sparsen as spn
 import matplotlib.pyplot as plt
-import os, json, shutil, tempfile, tarfile
+import os, sys, shutil, gzip, pickle
 import sheath1d as _sheath1d
 
 # Constants are in mks units
@@ -1032,6 +1032,23 @@ if the solution is diverging"""
         # Pass... the solution has converged
         return True
         
+    def solve(self, N=50, verbose=True):
+        """Repeatedly calls step_solution() until test_solution() returns True
+    solve(N=50)
+    
+N is the maximum number of iterations allowed
+"""
+        for count in range(N):
+            if verbose:
+                sys.stdout.write(repr(count) + '..')
+                sys.stdout.flush()
+            self.step_solution()
+            if self.test_solution():
+                if verbose:
+                    sys.stdout.write('[Done]\n')
+                return
+        raise Exception('Failed to converge in the allowed iteration count: ' + repr(N))
+        
     def init_post(self):
         """Spawn a PostIon1D instance for the solution results
     P = M.init_post()
@@ -1064,7 +1081,8 @@ ion generation rate 1/(z2-z1).  By necessity, 0 <= z1 < z2 <= 1.
         OR
     M.init_param({'alpha':alpha, 'beta':beta, ...})
     
-init_param() accepts individual keyword, value pairs or an IonParam object, or
+init_param() accepts individual keyword, valu
+e pairs or an IonParam object, or
 a dictionary with keyword, value pairs.
 
 Optional parameters and their defaults:
@@ -1201,7 +1219,7 @@ be obvious.  It is usually caused because r-values are too far from unity.
             Re = p.R / p.mu
             
             # Calculate the velocity and formation functions
-            self.u = -1. + (1-self.z)**(1./p.alpha)
+            self.u = -1. + (1-self.z)**(p.gamma/p.alpha)
         else:
             Re = 0.
             self.u = np.broadcast_to(0., self.z.shape)
@@ -1212,7 +1230,7 @@ be obvious.  It is usually caused because r-values are too far from unity.
         # since it will be singular at z=1.
         if p.omega > 0:
             self.w = (1-self.z)**(1./p.beta)
-            ww = p.omega * (1-self.z) ** (1./p.beta - 1.)
+            ww = (1-self.z) ** (p.gamma/p.beta - 1.)
         else:
             self.w = np.broadcast_to(0., self.z.shape)
             ww = np.broadcast_to(0., self.z.shape)
@@ -1246,8 +1264,8 @@ be obvious.  It is usually caused because r-values are too far from unity.
             # represented. etak refers to the conservation of positive
             # ions at node k.
             if p.omega>0:
-                self.C[etak] = ww[k]*p.gamma
-                self.C[nuk] = ww[k]*p.gamma/p.mu
+                self.C[etak] = ww[k]*p.gamma*p.omega
+                self.C[nuk] = ww[k]*p.gamma*p.omega/p.mu
             
             
             # The second index indicates which node coefficient is 
@@ -1374,331 +1392,6 @@ the C, L, or Q system tensors.
         
         return etaE, nuE, psiE
 
-class AnchoredFiniteIon1D(Ion1D):
-    """Like FiniteIon1D, but with formation starting at z=0.
-    
-An execution of the model might appear
->>> M = FiniteIon1D()
->>> M.init_param( z1, ... other params ...)
->>> M.init_grid( ... )
->>> M.init_mat()
->>> M.init_solution()
->>> while not M.test_solution():
-...     M.step_solution()
-Creates a model with a uniform ion generation region between 0 and z1 with
-ion generation rate 1/z1.  By necessity, 0 < z1 < 1.
-"""
-    def __init__(self):
-        # Initialize the general members
-        Ion1D.__init__(self)
-        # Add an attribute for keeping track of important indices
-        self.k = None
-        
-    def init_param(self, arg=None, **kwarg):
-        """FiniteIon1D model parameter initialization
-    M.init_param(z1=z1, ...)
-        OR
-    M.init_param( param_obj )
-        OR
-    M.init_param({'z1':z1, ...})
-    
-init_param() accepts individual keyword, value pairs or an IonParam object, or
-a dictionary with keyword, value pairs.
-
-Required parameters:
-z1          This is the location where the formation region ends.
-            init_param enforces  0 < z1 < 1
-            
-Optional parameters and their defaults:
-R           Positive ion Reynolds number (2500.)
-alpha       Dimensionless Debye length (1e-3)
-beta        Dimensionless inverse recombination length (10.)
-mu          Negative-to-positive species mobility ratio (200.)
-tau         Negative-to-positive temperature ratio (1.)
-psia        Dimensionless applied voltage (0.)
-
-Derived parameters:
-omega       Formation rate = 1./z1.  User values are overwritten.
-"""
-        if self.initstate > 0:
-            print('INIT_PARAM::WARNING: Parameters already seem to be implemented! Changes may have no effect.')
-
-        p = self.param
-        # Set some model defaults
-        p.R = 2500.
-        p.alpha = 1e-3
-        p.beta = 10.
-        p.mu = 200.
-        p.tau = 1.
-        p.psia = 0.
-        p.z1 = None
-        # Read in the arguments
-        if arg is not None:
-            p.set(arg)
-        if kwarg:
-            p.set(kwarg)
-        
-        # Test z1 and z2
-        if p.z1 is None:
-            raise Exception('AnchoredFiniteIon1D.init_param(): z1 parameter is required.')
-        elif not (0 < p.z1 < 1):
-            raise Exception('FiniteIon1D.init_param(): z1 parameter does not obey: 0 < z1 < 1.')
-            
-        # Force the omega value last (just in case the user tried to write it in kwarg)
-        p.omega = 1./(p.z1)
-
-
-    def init_grid(self, d, r=None):
-        """Initialize the grid and related parameters
-    M.init_grid( z )
-        OR
-    M.init_grid( d )
-        OR
-    M.init_grid( (d0, d1) )
-        OR
-    M.init_grid( d, (r0, r1, r2) )
-
-** Required arguments: 
-    z
-If the only argument is a numpy array, it will be treated as the node locations to
-use.  Be warned: if z1 and z2 values are not found in z, an Exception will be raised.
-    
-    d OR d=(d0, d1)
-If d is a single scalar value, it is interpreted as the approximate uniform node 
-spacing everywhere in the solution domain.  If d is an array-like type, it is
-expected to contain three elements that will be interpreted as the node spacing 
-in sub-domains 
-    d[0] : 0 <= z < z1 (upstream of the reaction zone), 
-    d[1] : z1 <= z <= z2 (in the reaction zone),
-    d[2] : z2 <= z <= 0 (downstream of the reaction zone)
-
-The actual node spacing will be adjusted to allow the node 
-
-** Optional arguments: 
-    r = (r0, r1, r2)
-Regardless of how many d-values are supplied, the optional r[X] keyword 
-arguments enhance the relative node spacing at the boundaries of the sub-domains
-(see diagram).  
-    r0 : z=0 (upstream boundary)
-    r1 : z=z1 (beginning of the reaction region)
-    r2 : z=z2 (end of the reaction region)
-    r3 : z=1 (domain end)
-
-** How is the grid calculated?
-The domain [0,1] is divided into three sub-domains formed by the reaction region
-z1 and z2.  In each a cubic grid (see the ion1d.cubicgrid() function) is used 
-to construct a piece-wise continuous distribution of node points.  The node 
-spacing is adjusted at the interface z1 so that there are no sharp 
-discontinuities in node spacing.
-
-The diagram below shows the sub-domains and the arguments that affect them.
-    
- r0            d0               r1              d1                  r2
- |                              |                                   |
- +------------------------------+-----------------------------------+
-z=0                            z=z1                                z=1
-
-The node spacing in each of the sub-domains will not always be exactly what is 
-specified.  The algorithm will adjust the actual spacing so that nodes always 
-fall exactly on z=z1.  The algorithm stores the index corresponding to z=z1 
-in k[0].
-
-At the interfaces, the nominal grid spacing will be the average of that of the
-neighboring sub-domains.  That can be modified by assinging a value to the 
-appropriate rX parameter.  For example, the nominal node spacing at z=z1 is 
-calculated r1 * 0.5 * (d0 + d1), so r1 = 1 does not affect the grid spacing, but
-r1 = 0.5 would double the node density.
-
-It should be emphasized that the actual grid spacing will vary significantly to 
-prevent discontinuities and to accommodate the r parameters.
-
-** What does a raised Exception mean?
-Grid generation can fail if the cubic function is forced into non-monotonic 
-behaviors (if the node locations are not strictly increasing).  This condition 
-is automatically detected by the cubicgrid() function, but the remedy may not 
-be obvious.  This problem is likely when there are neighboring regions with 
-strongly dissimilar grid spacing, so it can be remedied by experimenting with
-more uniform grid spacings or by experimenting with different r-values.
-"""
-        # Check to see if a grid already exists
-        if self.initstate > 0:
-            print('INIT_GRID WARNING::The system already appears to have a grid.  Overwriting.')
-            Ion1D.__init__(self, initstate=0)
-            self.k = None
-            
-        # Point to param for easier notation
-        p = self.param
-
-        # If d is a numpy array, it is an explicit grid definition
-        if isinstance(d, np.ndarray):
-            # Find z1 and z2
-            k0 = d.searchsorted(p.z1)
-            if d[k0] != p.z1:
-                raise Exception('FiniteIon1D.init_grid(): Did not find z1 in explicit grid definition.')
-            self.z = d
-            self.k = [k0]
-            self.initstate=1
-            return
-            
-        # Assign spacing to each of the sub-domains
-        # If d is an array-like, 
-        if hasattr(d, '__iter__'):
-            try:
-                d0,d1 = d
-                d0 = float(d0)
-                d1 = float(d1)
-            except:
-                raise Exception('Multiple grid distances should be a two-element array-like of floats')
-        # If d is a scalar
-        else:
-            try:
-                d0 = d1 = float(d)
-            except:
-                raise Exception('If d is a scalar, it must be convertible to a float')
-        # Assign relative spacing to each of the sub-domain boundaries
-        if r is None:
-            r0 = r1 = r2 = 1.
-        else:
-            try:
-                r0,r1,r2 = r
-                r0 = float(r0)
-                r1 = float(r1)
-                r2 = float(r2)
-            except:
-                raise Exception('If r is specified, it must be a three-element array-like of floats')
-        
-        # Modify the nominal grid spacing to arrive at element counts
-        N0 = int(np.ceil(p.z1 / d0))
-        N1 = int(np.ceil((1-p.z1) / d1))
-        
-        # Calculate the spacing at the interface
-        d01 = r1 * 0.5 * (d0+d1)
-        
-        try:
-            zz0 = p.z1*cubicgrid(N0, r0, d01/d0, stop=False)
-        except:
-            raise Exception('These settings caused the up-stream zone (0<=z<z1) to be non-monotonic.  Try new values for d0, d1, or r1.')
-        try:
-            zz1 = p.z1 + (1.-p.z1)*cubicgrid(N1, d01/d1, r2, stop=False)
-        except:
-            raise Exception('These settings caused the reaction zone (z1<=z<=1) to be non-monotonic.  Try new values for d or r.')
-            
-        self.z = np.concatenate((zz0,zz1))
-        self.k = [N0]
-        self.initstate = 1
-
-    def init_mat(self):
-        """Construct the solution matrices/vectors C, L, and Q."""
-        
-        if self.initstate < 1:
-            raise Exception('INIT_MAT::Failed.  Run INIT_GRID() first.')
-        elif self.initstate > 1:
-            print('INIT_MAT WARNING::Matrices already generated. Overwriting.')
-            Ion1D.__init__(self, initstate = 1)
-        
-        p = self.param
-        
-        # How big are the tensors?
-        N = self.z.size
-        # initialize CLQ
-        self.C = np.zeros((3*N,))
-        self.L = spn.SparseN((3*N,3*N))
-        self.Q = spn.SparseN((3*N,3*N,3*N))
-        
-        # calculate the square of alpha
-        aa = p.alpha*p.alpha
-        # Calculate the electric reynolds number
-        Re = p.R / (p.mu * p.tau)
-            
-        # Loop over the internal nodes
-        for k in range(1,self.z.size-1):
-            etak = k
-            nuk = etak + N
-            psik = nuk + N
-            # Finite differences
-            dz10 = self.z[k] - self.z[k-1]
-            dz21 = self.z[k+1] - self.z[k]
-            dz20 = dz10 + dz21
-            
-            ap = - dz21 / (dz10 * dz20)
-            bp = (dz21 - dz10)/(dz10 * dz21)
-            cp = dz10 / (dz20 * dz21)
-            
-            app = 2 / (dz10 * dz20)
-            bpp = -2 / (dz10 * dz21)
-            cpp = 2 / (dz20 * dz21)
-            
-            self.L[etak,etak-1] = -ap + app/p.R
-            self.L[etak,etak] = -bp + bpp/p.R
-            self.L[etak,etak+1] = -cp + cpp/p.R
-            
-            self.L[nuk,nuk-1] = -ap + app/Re
-            self.L[nuk,nuk] = -bp + bpp/Re
-            self.L[nuk,nuk+1] = -cp + cpp/Re
-            
-            self.L[psik,psik-1] = aa * app
-            self.L[psik,psik] = aa * bpp
-            self.L[psik,psik+1] = aa * cpp
-            self.L[psik,etak] = 1.
-            self.L[psik,nuk] = -1.
-            
-            self.Q[etak,etak,nuk] = -p.beta
-            
-            self.Q[nuk,etak,nuk] = -p.beta
-            
-            self.Q[etak,etak-1,psik-1] = ap*ap * p.tau/p.R
-            self.Q[etak,etak,psik-1] = (bp*ap + app) * p.tau/p.R
-            self.Q[etak,etak+1,psik-1] = cp*ap * p.tau/p.R
-            self.Q[etak,etak-1,psik] = ap*bp * p.tau/p.R
-            self.Q[etak,etak,psik] = (bp*bp + bpp) * p.tau/p.R
-            self.Q[etak,etak+1,psik] = cp*bp * p.tau/p.R
-            self.Q[etak,etak-1,psik+1] = ap*cp * p.tau/p.R
-            self.Q[etak,etak,psik+1] = (bp*cp + cpp) * p.tau/p.R
-            self.Q[etak,etak+1,psik+1] = cp*cp * p.tau/p.R
-
-            self.Q[nuk,nuk-1,psik-1] = -ap*ap / Re
-            self.Q[nuk,nuk,psik-1] = -(bp*ap + app) / Re
-            self.Q[nuk,nuk+1,psik-1] = -cp*ap / Re
-            self.Q[nuk,nuk-1,psik] = -ap*bp / Re
-            self.Q[nuk,nuk,psik] = -(bp*bp + bpp) / Re
-            self.Q[nuk,nuk+1,psik] = -cp*bp / Re
-            self.Q[nuk,nuk-1,psik+1] = -ap*cp / Re
-            self.Q[nuk,nuk,psik+1] = -(bp*cp + cpp) / Re
-            self.Q[nuk,nuk+1,psik+1] = -cp*cp / Re
-            
-            if k < self.k[0]:
-                self.C[etak] = p.omega
-                self.C[nuk] = p.omega
-                
-
-        k = self.k[0]
-        etak = k
-        nuk = etak + self.z.size
-        # Scale by the fraction of the node that belongs to the reaction region
-        ss = (self.z[k]-self.z[k-1])/(self.z[k+1]-self.z[k-1])
-        self.C[nuk] = self.C[etak] =  ss * p.omega
-
-        # Add boundary conditions
-        etak = 0
-        nuk = etak + self.z.size
-        psik = nuk + self.z.size
-        self.L[etak,etak] = 1        # eta(0) = 0
-        self.L[nuk,nuk] = 1          # nu(0) = 0
-        self.L[psik,psik] = 1        # psi(0) = psia
-        self.C[psik] = -p.psia
-        
-        etak = self.z.size-1
-        nuk = etak + self.z.size
-        psik = nuk + self.z.size
-        self.L[etak,etak] = 1        # eta(1) = 0
-        self.L[nuk,nuk] = 1          # nu(1) = 0
-        self.L[psik,psik] = 1        # psi(1) = 0
-        
-        # Finally, generate QQT
-        self.QQT = self.Q + self.Q.transpose(1,2)
-        
-        self.initstate = 2
-
 
 class PostIon1D(Ion1D):
     """A special class for dealing with saving and loading the results of prior model runs
@@ -1711,8 +1404,7 @@ PostIon1D instances can be built from the results of an existing Ion1D object,
 or they can be loaded from the results saved earlier.
 
     M = PostIon1D( ExistingIon1DObject )
-        OR
-    M = PostIon1D( '/path/to/data/archive.tar' )
+    M.save('/path/to/gzfile')
     
 The intention is that attributes be added freely to the object so they can be
 saved and reloaded later.
@@ -1749,7 +1441,8 @@ For example, a badly constructed post.json file might have an entry
 'save':'FOOLED YOU!' that would overwrite the save() method with a string that 
 emphasizes the nature of the problem.
 """
-    def __init__(self, source, verbose=False):
+
+    def __init__(self, source=None):
         # If initializing from another model
         if issubclass(type(source), Ion1D):
             # Verify that the model actually has a solution
@@ -1769,184 +1462,31 @@ emphasizes the nature of the problem.
             self.nuE = source.nuE
             self.psiE = source.psiE
 
+            self.u = source.u
+            self.w = source.w
+
             self.model = type(source)
-            
-            
-        elif isinstance(source, str):
-            # Treat the source string as a path to tar archive
-            # Force absolute paths
-            source = os.path.abspath(source)
-            # Verify that the source exists
-            if not os.path.isfile(source):
-                # If not, look for different extensions
-                path,filename = os.path.split(source)
-                contents = os.listdir(path)
-                found = False
-                for candidate in contents:
-                    if candidate.startswith(filename):
-                        found = True
-                        source=os.path.join(path,candidate)
-                if not found:
-                    raise Exception('File not found: ' + source)
-            if verbose:
-                print('Loading archive: ' + source)
-            
-            # OK, let's go
-            with tempfile.TemporaryDirectory() as tempdir:
-                with tarfile.open(source, 'r') as arch_fd:
-                    if verbose:
-                        print('Expanding archive into: ' + tempdir)
-                    arch_fd.extractall(path=tempdir)
-                    
-                if verbose:
-                    print('Loading member: post.json')
-                # Load the json file with the raw data
-                try:
-                    with open(os.path.join(tempdir, 'post.json'),'r') as ff:
-                        post = json.load(ff)
-                except:
-                    raise Exception('Failed to parse the post json file: ' + postfile)
-                    
-                for key,value in post.items():
-                    if isinstance(value,str):
-                        npyfile = os.path.join(tempdir,value)
-                        if os.path.isfile(npyfile):
-                            if verbose:
-                                print('Loading numpy array from: ' + value)
-                            post[key] = np.load(npyfile)
-                        
-                        self.__dict__[key] = value
-                    
-            # Read in the result to the Post object
-            self.__dict__.update(post)
-            # Finally, clean up some of the standard attribute types...
-            # Convert the parameters to an IonParam object if able
-            if isinstance(self.param, dict):
-                self.param = IonParam(**self.param)
-            else:
-                print('LOAD_POST::WARNING: Did not find a valid parameter dictionary')
-            # If the model name string appears in the ion1d module, use it.
-            if isinstance(self.model,str) and self.model in _ion1d.__dict__:
-                self.model = _ion1d.__dict__[self.model]
-            else:
-                print('LOAD_POST::WARNING: Did not find the model: ' + repr(self.model))
-            
+        elif source is None:
+            pass
+        else:
+            raise Exception('PostIon1D instances may only be delcared from Ion1D instances.')
 
 
-    def save(self, target, overwrite=False, compression='bz2', verbose=False):
+    def save(self, target, overwrite=False):
         """Save the PostIon1D object
     M.save(filename)
 
-The save() method creates a tarball archive that can be used to reconstitute
-the PostIon1D object later.  The compression keyword parameter is a string that
-allows the user to opt for different compression algorithms.  Valid strings are
-listed below.
+The save() method creates a pickle file of the PostIon1D instance at the 
+filename specified.
 
-Nominally, the filename should be a path to a file with no appended extension.  
-The save() method will append the correct extension if it is not found.  The
-extension is based on the compression method.
-
-compression extension   method
-'none'      .tar        none-tarball only
-'bz2'       .tar.bz2    bzip2 compression
-'gz'        .tar.gz     gzip compression
-
-** FORMAT **
-All of the PostIon1D object attributes that can be serialized in a json format
-are written explicitly to the "post.json" file in the root of the output 
-tarball.  Numpy arrays are saved as separate files in the tarball named by their
-attribute name with the .npy extension appended, then the array is replaced by
-its filename in the json file.  For example, in "post.json" struct, the 'z'
-attribute would appear ... "z":"z.npy" ... and there would be a file named z.npy
-in the root of the tarball.
-
-There is also a special "model" attribute, which is the class that was 
-originally used to initialize the PostIon1D instance.  When it is saved, it is
-converted into the class's __name__ string.
-
-The "param" attribute, which is an instance of IonParam, is converted to a dict
-using the object's asdict() method, and stored in the json file.
-
-Finally, any other attributes that are not str, int, float, dict, list or numpy
-ndarrays are replaced with the output of repr().  
+Optional keyword arguments:
+overwrite:  If False, collisions with existing files will cause an exception.
 """
-        # Initialize the extension to append to the target file
-        extension = '.tar'
-        # Initialize the tar mode string
-        tarmode = 'w:'
-        
-        # Case out the compression mode, and assign the target file extension
-        # and the tar mode string.
-        if compression == 'none' or compression is None:
-            extension = '.tar'
-            tarmode = 'w:'
-        elif compression == 'gz':
-            extension = '.tar.gz'
-            tarmode = 'w:gz'
-        elif compression == 'bz2':
-            extension = '.tar.bz2'
-            tarmode = 'w:bz2'
-        else:
-            raise Exception('Unexpected value for the compression keyword: {:s}\n  Expected one of: {:s}'.format(\
-                    compression, repr(COMPRESSION_ALLOWED)))
-        
-        # Ok, that's taken care of.  Now, name some directories
-        # The target should have the proper extension and it should be a full
-        # path.  I don't like relative paths... they're so... relative.
-        # Yup, coding for LONG hours during a COVID-19 pandemic inspires some
-        # weird comments.
-        if not target.endswith(extension):
-            target += extension
-        target = os.path.abspath(target)
-
-        if verbose:
-            print('Writing to file: ' + target)
-
-        # Check to see if the destination directory already exists
-        if os.path.exists(target):
-            if overwrite:
-                if verbose:
-                    print('Overwriting existing file.')
-                os.remove(target)
-            else:
-                raise Exception('The target file already exists: ' + target)
-
-        with tempfile.TemporaryDirectory() as tempdir:
-            if verbose:
-                print('Staging files in directory: ' + tempdir)
-            # Make a duplicate of the post dict.  As we go, we will overwrite
-            # Numpy arrays with their file names
-            posttemp = self.__dict__.copy()
-
-            # Create the archive
-            with tarfile.open(target, 'w:' + compression) as arch_fd:
-                for key,value in posttemp.items():
-                    if isinstance(value,np.ndarray):
-                        npfile = key + '.npy'
-                        npfile_full = os.path.join(tempdir, npfile)
-                        np.save(npfile_full, value)
-                        arch_fd.add(npfile_full, arcname=npfile)
-                        posttemp[key] = npfile
-                        os.remove(npfile_full)
-                    # If the attribute is uninitialized, don't save it
-                    elif isinstance(value,IonParam):
-                        posttemp[key] = value.asdict()
-                    # Catch the model type (or others too... why not?)
-                    elif isinstance(value,type):
-                        posttemp[key] = value.__name__
-                    # Use a catch-all for other non-serializable entries
-                    elif not isinstance(value,(str,int,float,dict,list,tuple)):
-                        posttemp[key] = repr(value)
-                    elif value is None:
-                        del posttemp[key]
-                    
-                # Write the post dictionary
-                postfile = 'post.json'
-                postfile_full = os.path.join(tempdir, postfile)
-                with open(postfile_full, 'w') as ff:
-                    json.dump(posttemp, ff, skipkeys=True)
-                arch_fd.add(postfile_full, arcname=postfile)
-                os.remove(postfile_full)
+        if os.path.exists(target) and not overwrite:
+            raise Exception('File already exists. Override with overwrite=True: ' + os.path.abspath(target))
+            
+        with gzip.open(target, 'wb') as ff:
+            pickle.dump(self, ff)
 
     def expand_post(self):
         """Generate post-processing data in members
@@ -1968,26 +1508,7 @@ ndarrays are replaced with the output of repr().
         # Point to the parameters
         p = self.param
         
-        # Calculate a velocity array
-        if p.R > 0:            
-            # Calculate the electric reynolds number
-            Re = p.R / p.mu
-            
-            # Calculate the velocity and formation functions
-            self.u = -1. + (1-self.z)**(1./p.alpha)
-        else:
-            Re = 0.
-            self.u = np.broadcast_to(0., self.z.shape)
-            
-        # Calculate a formation rate array
-        # ww is the modified formation rate array that includes the
-        # 1/(1-z) term.  It is important not to divide by 1-z explicitly
-        # since it will be singular at z=1.
-        if p.omega > 0:
-            self.w = (1-self.z)**(1./p.beta)
-        else:
-            self.w = np.broadcast_to(0., self.z.shape)
-        
+        Re = p.R / p.mu
         
         # Initialize a solution matrix to perform the voltage perturbation
         # anlaysis.
@@ -2079,7 +1600,17 @@ ndarrays are replaced with the output of repr().
         self.Fed = -p.mu/p.gamma * (1-self.z) * (cp * self.nu)
         self.Fem = p.mu * self.nu * self.psi
         
+        self.Fi = self.Fiu + self.Fid + self.Fim
+        self.Fe = self.Feu + self.Fed + self.Fem
         
+        temp = np.empty_like(self.z, dtype=float)
+        temp[:-1] = (p.gamma/(1.-self.z[:-1])) * (self.psi[:-1] - p.psia)
+        temp[-1] = 0.
+        self.phi = cumtrapz(y=temp, x=self.z, initial=0.)
+        
+        temp[:-1] = (p.gamma/(1.-self.z[:-1])) * (self.psi1[:-1] - 1.)
+        temp[-1] = 0.
+        self.phi1 = cumtrapz(y=temp, x=self.z, initial=0.)
 
     def diff(self, y, second=False):
         """Return the derivative of the vector, y, on z.
@@ -2108,3 +1639,11 @@ ndarrays are replaced with the output of repr().
             dy[N-1] = np.dot(cp, y[k-3:])
         
         return dy
+
+
+def load(source):
+    """Load a PostIon1D instance from a gzip file
+    p = load('/path/to/file')
+"""
+    with gzip.open(source, 'rb') as ff:
+        return pickle.load(ff)
