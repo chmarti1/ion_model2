@@ -1578,13 +1578,9 @@ condition, and make the appropriate simplifications.
         # Finally, set up the constant voltage condition
         for k in range(1,N-1):
             kk = k + 2*N
-            temp = 0.5 * p.gamma * (self.z[k+1] - self.z[k-1]) / (1 - self.z[k])
+            temp = 0.5 * (self.z[k+1] - self.z[k-1])
             self.L[psik,kk] = temp
             self.L[psik,psik] += -temp
-        # Include the domain edges in the integral
-        temp = 0.5 * p.gamma * (self.z[1] - self.z[0]) / (1-self.z[0])
-        self.L[psik,2*N] = temp
-        self.L[psik,psik] += -temp
             
         self.C[psik] = -p.phia
         
@@ -1626,7 +1622,7 @@ and the total error history, ee
             self.nu[:] = nu
             
         if psi is None:
-            self.psi[:] = 0.
+            self.psi[:] = self.param.psia
         else:
             self.psi[:] = psi
         
@@ -1892,7 +1888,7 @@ overwrite:  If False, collisions with existing files will cause an exception.
         self.Fe = self.Feu + self.Fed + self.Fem
         
         temp = np.empty_like(self.z, dtype=float)
-        temp[:-1] = (p.gamma/(1.-self.z[:-1])) * (self.psi[:-1] - self.psi[-1])
+        temp[:-1] = (p.gamma/(1.-self.z[:-1])) * (self.psi[:-1] - p.psia)
         temp[-1] = 0.
         self.phi = cumtrapz(y=temp, x=self.z, initial=0.)
         
