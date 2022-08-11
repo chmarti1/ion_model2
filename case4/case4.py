@@ -10,7 +10,7 @@ if __name__ == '__main__':
     
     # Generate a list of R and alpha value combinations
     Wlist = [0, .5, 1, 2]
-    plist = [0, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40]
+    plist = [0,1,2,3,4,5,6,7,8,9,10,12,14,16,20]
     
     phi = []
     psi = []

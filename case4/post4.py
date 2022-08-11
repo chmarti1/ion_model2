@@ -26,7 +26,7 @@ for thisfile in os.listdir(datadir):
         ax.plot(p.z, p.eta, 'k', label='$\\eta$')
         ax.plot(p.z, p.nu, 'k--', label='$\\nu$')
         ax.plot(p.z, p.psi, 'k:', label='$\\psi$')
-        ax.set_title(f'$\\Omega$={p.param.omega} $\\psi$={p.param.phia}')
+        ax.set_title(f'$\\Omega$={p.param.omega} $\\phi$={p.param.phia}')
     
         ax.legend(loc=0)
         
@@ -46,10 +46,13 @@ marker_list = [
     {'ls':'none', 'marker':'d', 'markersize':8, 'mfc':'k', 'mec':'k'},
     {'ls':'none', 'marker':'^', 'markersize':8, 'mfc':'k', 'mec':'k'}]
     
-ax1 = lp.init_fig('$\\phi_\\infty$', '$\\phi_\\infty$', label_size=16)
+ax1 = lp.init_fig('$\\phi_\\infty$', '$\\psi_\\infty$', label_size=16)
 #ax1.set_xscale('log')
 ax1.grid(True, which='both')
-for omega,plist in byomega.items():
+Wlist = list(byomega.keys())
+Wlist.sort()
+for omega in Wlist:
+    plist = byomega[omega]
     ax = lp.init_fig('$z$', '$\\eta$, $\\nu$, $\\psi$', label_size=16)
 
     psi = []
@@ -75,6 +78,7 @@ for omega,plist in byomega.items():
 
     ax1.plot(phi, psi, **marker_list.pop(), label = f'$\\Omega$ = {omega:0.1f}')
     #ax1.plot(omega, phi, **marker_list.pop(), label = f'$\\beta$ = {beta:0.1f}')
+ax1.set_ylim([-0.1,.02])
 ax1.legend(loc=0)
 fig = ax1.get_figure()
 fig.savefig(os.path.join(postdir, 'psiphi.png'))
