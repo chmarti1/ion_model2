@@ -5,7 +5,7 @@ import os
 from miscpy import lplot as lp
 
 datadir = 'data'
-postdir = 'post1'
+postdir = 'post'
 
 lp.set_defaults(font_size=16, legend_font_size=16)
 
@@ -30,7 +30,9 @@ for thisfile in os.listdir(datadir):
     
         ax.legend(loc=0)
         
-        ax.get_figure().savefig(os.path.join(postdir, base+'.png'))
+        fig = ax.get_figure()
+        fig.savefig(os.path.join(postdir, base+'.png'))
+        lp.plt.close(fig)
 
         # Build a dictionary of simulation results organized by the
         # alpha value
@@ -41,13 +43,18 @@ for thisfile in os.listdir(datadir):
 marker_list = [
     {'ls':'none', 'marker':'o', 'markersize':8, 'mfc':'w', 'mec':'k'},
     {'ls':'none', 'marker':'s', 'markersize':8, 'mfc':'w', 'mec':'k'},
-    {'ls':'none', 'marker':'d', 'markersize':8, 'mfc':'k', 'mec':'k'},
+    {'ls':'none', 'marker':'d', 'markersize':8, 'mfc':'w', 'mec':'k'},
     {'ls':'none', 'marker':'^', 'markersize':8, 'mfc':'k', 'mec':'k'}]
     
 ax1 = lp.init_fig('$R$', '$\\phi_\\infty$', label_size=16)
 ax1.set_xscale('log')
 ax1.grid(True, which='both')
-for alpha,plist in byalpha.items():
+
+alist = list(byalpha.keys())
+alist.sort()
+for alpha in alist:
+    plist = byalpha[alpha]
+    
     ax = lp.init_fig('$z$', '$\\eta$, $\\nu$, $\\psi$', label_size=16)
 
     R = []
@@ -70,7 +77,6 @@ for alpha,plist in byalpha.items():
         [{'color':'k', 'marker':None, 'ls':':'}, '$\\psi$']],
         loc_edge = 'rt')
     fig.savefig(os.path.join(postdir, f'alpha{int(alpha*10):02d}.png'))
-
     
     ax1.plot(R, phi, **marker_list.pop(), label = f'$\\alpha$ = {alpha:0.1f}')
     ax1.legend(loc=0)
