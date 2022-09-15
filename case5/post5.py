@@ -49,7 +49,7 @@ marker_list = [
     {'ls':'none', 'marker':'d', 'markersize':8, 'mfc':'k', 'mec':'k'},
     ]
     
-ax1 = lp.init_fig('$\\Omega$', '$\\psi_\\infty$', label_size=16)
+ax1 = lp.init_fig('$\\beta \\Omega$', '$J$', label_size=16)
 #ax1.set_xscale('log')
 ax1.grid(True, which='both')
 blist = list(bybeta.keys())
@@ -58,18 +58,22 @@ for beta in blist:
     plist = bybeta[beta]
     ax = lp.init_fig('$z$', '$\\eta$, $\\nu$, $\\psi$', label_size=16)
 
-    psi = []
+    J = []
     phi = []
     omega = []
     
     for p in plist:
-        psi.append(p.psi[-1])
+        J.append(p.J)
         phi.append(p.phi[-1])
         omega.append(p.param.omega)
         
         ax.plot(p.z, p.eta, 'k', label='$\\eta$')
         ax.plot(p.z, p.nu, 'k--', label='$\\nu$')
         ax.plot(p.z, p.psi, 'k:', label='$\\psi$')
+        
+    J = np.array(J)
+    omega = np.array(omega)
+    phi = np.array(phi)
         
     ax.set_title(f'$\\beta$={beta}')
     fig = ax.get_figure()
@@ -81,8 +85,10 @@ for beta in blist:
         loc_edge = 'rt')
     fig.savefig(os.path.join(postdir, f'beta{int(beta*10):02d}.png'))
 
-    ax1.plot(omega, psi, **marker_list.pop(), label = f'$\\beta$ = {beta:0.1f}')
+    ax1.plot(omega*beta, J, **marker_list.pop(), label = f'$\\beta$ = {beta:0.1f}')
     #ax1.plot(omega, phi, **marker_list.pop(), label = f'$\\beta$ = {beta:0.1f}')
 ax1.legend(loc=0)
+ax1.set_xscale('log')
+ax1.set_yscale('log')
 fig = ax1.get_figure()
 fig.savefig(os.path.join(postdir, 'psiphi.png'))

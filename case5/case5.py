@@ -15,7 +15,7 @@ if __name__ == '__main__':
     beta = []
     omega = []
     for w in Wlist:
-        omega += [w] * len(blist)
+        omega += [w / b for b in blist]
         beta += blist
     
     ipm = s1d.IonParamManager(\
@@ -23,7 +23,7 @@ if __name__ == '__main__':
             alpha=1.,
             omega=omega,
             beta=beta,
-            phia=15,
+            phia=40.,
             gamma=10)
 
     s = s1d.Sheath1DV()
@@ -31,7 +31,7 @@ if __name__ == '__main__':
     for index,ip in ipm.items():
         print(index)
         s.init_param(ip)
-        s.init_grid(.005)
+        s.init_grid(.002)
         s.init_mat()
         if first:
             s.init_solution()
