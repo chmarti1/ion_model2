@@ -1,7 +1,8 @@
 #!/usr/bin/python3
-"""CASE 4
+"""CASE 5
 
-Case 4 is an i-v study with various values of omega
+Case 5 is a saturation current study with various values of beta and 
+omega
 """
 import sheath1d as s1d
 import os
@@ -9,13 +10,13 @@ import os
 if __name__ == '__main__':
     
     # Generate a list of R and alpha value combinations
-    Wlist = [0, 0.1, 0.2, 0.5, 1, 2, 5]
-    blist = [0.1, 0.2, 0.5, 1, 2, 5]
+    Wblist = [.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20]
+    blist = [0.1, 0.5, 1, 5]
     
-    beta = []
-    omega = []
-    for w in Wlist:
-        omega += [w / b for b in blist]
+    beta = [0.]
+    omega = [0.]
+    for wb in Wblist:
+        omega += [wb / b for b in blist]
         beta += blist
     
     ipm = s1d.IonParamManager(\

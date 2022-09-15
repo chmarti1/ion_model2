@@ -74,7 +74,7 @@ for beta in blist:
     J = np.array(J)
     omega = np.array(omega)
     phi = np.array(phi)
-        
+    
     ax.set_title(f'$\\beta$={beta}')
     fig = ax.get_figure()
     
@@ -91,4 +91,4 @@ ax1.legend(loc=0)
 ax1.set_xscale('log')
 ax1.set_yscale('log')
 fig = ax1.get_figure()
-fig.savefig(os.path.join(postdir, 'psiphi.png'))
+fig.savefig(os.path.join(postdir, 'jomega.png'))
