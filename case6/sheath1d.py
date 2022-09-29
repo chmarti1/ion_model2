@@ -1853,6 +1853,7 @@ overwrite:  If False, collisions with existing files will cause an exception.
     phi     Dimensionless voltage
     phi1    Perturbed voltage
     
+    J       Scalar dimensionless current density
     
 """
 
@@ -1963,6 +1964,9 @@ overwrite:  If False, collisions with existing files will cause an exception.
         temp[:-1] = (p.gamma/(1.-self.z[:-1])) * (self.psi1[:-1] - 1.)
         temp[-1] = 0.
         self.phi1 = cumtrapz(y=temp, x=self.z, initial=0.)
+        
+        # Calculate current density
+        self.J = self.psi[-1] * (p.tau + p.mu)
 
     def diff(self, y, second=False):
         """Return the derivative of the vector, y, on z.

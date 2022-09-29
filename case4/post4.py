@@ -40,13 +40,18 @@ for thisfile in os.listdir(datadir):
             byomega[p.param.omega] = []
         byomega[p.param.omega].append(p)
 
+#marker_list = [
+#    {'ls':'none', 'marker':'o', 'markersize':8, 'mfc':'w', 'mec':'k'},
+#    {'ls':'none', 'marker':'s', 'markersize':8, 'mfc':'w', 'mec':'k'},
+#    {'ls':'none', 'marker':'d', 'markersize':8, 'mfc':'k', 'mec':'k'},
+#    {'ls':'none', 'marker':'^', 'markersize':8, 'mfc':'k', 'mec':'k'}]
 marker_list = [
-    {'ls':'none', 'marker':'o', 'markersize':8, 'mfc':'w', 'mec':'k'},
-    {'ls':'none', 'marker':'s', 'markersize':8, 'mfc':'w', 'mec':'k'},
-    {'ls':'none', 'marker':'d', 'markersize':8, 'mfc':'k', 'mec':'k'},
-    {'ls':'none', 'marker':'^', 'markersize':8, 'mfc':'k', 'mec':'k'}]
+    {'ls':'-', 'color':'k', 'marker':'o', 'markersize':8, 'mfc':'w', 'mec':'k'},
+    {'ls':'-', 'color':'k', 'marker':'s', 'markersize':8, 'mfc':'w', 'mec':'k'},
+    {'ls':'-', 'color':'k', 'marker':'d', 'markersize':8, 'mfc':'k', 'mec':'k'},
+    {'ls':'-', 'color':'k', 'marker':'^', 'markersize':8, 'mfc':'k', 'mec':'k'}]
     
-ax1 = lp.init_fig('$\\phi_\\infty$', '$\\psi_\\infty$', label_size=16)
+ax1 = lp.init_fig('$\\phi_\\infty$', '$J$', label_size=16)
 #ax1.set_xscale('log')
 ax1.grid(True, which='both')
 Wlist = list(byomega.keys())
@@ -55,11 +60,11 @@ for omega in Wlist:
     plist = byomega[omega]
     ax = lp.init_fig('$z$', '$\\eta$, $\\nu$, $\\psi$', label_size=16)
 
-    psi = []
+    J = []
     phi = []
     
     for p in plist:
-        psi.append(p.psi[-1])
+        J.append(p.J)
         phi.append(p.phi[-1])
         
         ax.plot(p.z, p.eta, 'k', label='$\\eta$')
@@ -76,9 +81,15 @@ for omega in Wlist:
         loc_edge = 'rt')
     fig.savefig(os.path.join(postdir, f'omega{int(omega*10):02d}.png'))
 
-    ax1.plot(phi, psi, **marker_list.pop(), label = f'$\\Omega$ = {omega:0.1f}')
+    # Sort by phi value
+    I = np.argsort(phi)
+    phi = np.array(phi)[I]
+    J = np.array(J)[I]
+
+    ax1.plot(phi, J, **marker_list.pop(0), label = f'$\\Omega$ = {omega:0.1f}')
     #ax1.plot(omega, phi, **marker_list.pop(), label = f'$\\beta$ = {beta:0.1f}')
-ax1.set_ylim([-0.1,.02])
+
+ax1.set_ylim([-5,5])
 ax1.legend(loc=0)
 fig = ax1.get_figure()
-fig.savefig(os.path.join(postdir, 'psiphi.png'))
+fig.savefig(os.path.join(postdir, 'jphi.png'))

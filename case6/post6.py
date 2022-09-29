@@ -46,7 +46,7 @@ marker_list = [
     {'ls':'none', 'marker':'d', 'markersize':8, 'mfc':'w', 'mec':'k'},
     {'ls':'none', 'marker':'^', 'markersize':8, 'mfc':'k', 'mec':'k'}]
     
-ax1 = lp.init_fig('$R$', '$\\psi_\\infty$', label_size=16)
+ax1 = lp.init_fig('$R$', '$J$', label_size=16)
 #ax1.set_xscale('log')
 ax1.grid(True, which='both')
 
@@ -58,11 +58,11 @@ for alpha in alist:
     ax = lp.init_fig('$z$', '$\\eta$, $\\nu$, $\\psi$', label_size=16)
 
     R = []
-    psi = []
+    J = []
     
     for p in plist:
         R.append(p.param.R)
-        psi.append(p.psi[-1])
+        J.append(p.J)
         
         ax.plot(p.z, p.eta, 'k', label='$\\eta$')
         ax.plot(p.z, p.nu, 'k--', label='$\\nu$')
@@ -78,7 +78,7 @@ for alpha in alist:
         loc_edge = 'rt')
     fig.savefig(os.path.join(postdir, f'alpha{int(alpha*10):02d}.png'))
     
-    ax1.plot(R, psi, **marker_list.pop(), label = f'$\\alpha$ = {alpha:0.1f}')
+    ax1.plot(R, J, **marker_list.pop(), label = f'$\\alpha$ = {alpha:0.1f}')
     ax1.legend(loc=0)
     fig = ax1.get_figure()
-    fig.savefig(os.path.join(postdir, 'psi.png'))
+    fig.savefig(os.path.join(postdir, 'J.png'))

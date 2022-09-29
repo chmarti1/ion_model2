@@ -51,6 +51,10 @@ marker_list = [
     
 ax1 = lp.init_fig('$\\beta \\Omega$', '$J$', label_size=16)
 #ax1.set_xscale('log')
+x = 10**np.linspace(-1.5, 1.5, 31)
+y = 1 + x
+ax1.plot(x,y,'k-',label='$R + \\beta\\Omega$')
+
 ax1.grid(True, which='both')
 blist = list(bybeta.keys())
 blist.sort()
@@ -85,8 +89,10 @@ for beta in blist:
         loc_edge = 'rt')
     fig.savefig(os.path.join(postdir, f'beta{int(beta*10):02d}.png'))
 
-    ax1.plot(omega*beta, J, **marker_list.pop(), label = f'$\\beta$ = {beta:0.1f}')
+    if beta > 0:
+        ax1.plot(omega*beta, J, **marker_list.pop(0), label = f'$\\beta$ = {beta:0.1f}')
     #ax1.plot(omega, phi, **marker_list.pop(), label = f'$\\beta$ = {beta:0.1f}')
+
 ax1.legend(loc=0)
 ax1.set_xscale('log')
 ax1.set_yscale('log')
