@@ -43,13 +43,19 @@ for thisfile in os.listdir(datadir):
 marker_list = [
     {'ls':'none', 'marker':'o', 'markersize':8, 'mfc':'w', 'mec':'k'},
     {'ls':'none', 'marker':'s', 'markersize':8, 'mfc':'w', 'mec':'k'},
-    {'ls':'none', 'marker':'d', 'markersize':8, 'mfc':'k', 'mec':'k'},
-    {'ls':'none', 'marker':'^', 'markersize':8, 'mfc':'k', 'mec':'k'}]
-    
-ax1 = lp.init_fig('$\\Omega$', '$\\phi_\\infty$', label_size=16)
+    {'ls':'none', 'marker':'d', 'markersize':8, 'mfc':'w', 'mec':'k'},
+    {'ls':'none', 'marker':'o', 'markersize':8, 'mfc':'k', 'mec':'k'},
+    {'ls':'none', 'marker':'s', 'markersize':8, 'mfc':'k', 'mec':'k'}]
+
+blist = list(bybeta.keys())
+blist.sort()
+
+ax1 = lp.init_fig('$\\beta^{2}\\Omega$', '$\\phi_\\infty$', label_size=16)
 ax1.set_xscale('log')
 ax1.grid(True, which='both')
-for beta,plist in bybeta.items():
+for beta in blist:
+    plist = bybeta[beta]
+    
     ax = lp.init_fig('$z$', '$\\eta$, $\\nu$, $\\psi$', label_size=16)
 
     omega = []
@@ -73,7 +79,7 @@ for beta,plist in bybeta.items():
         loc_edge = 'rt')
     fig.savefig(os.path.join(postdir, f'beta{int(beta*10):02d}.png'))
 
-    ax1.plot(np.array(omega), phi, **marker_list.pop(), label = f'$\\beta$ = {beta:0.1f}')
+    ax1.plot(np.array(omega)*beta**2, phi, **marker_list.pop(0), label = f'$\\beta$ = {beta:0.2f}')
     #ax1.plot(omega, phi, **marker_list.pop(), label = f'$\\beta$ = {beta:0.1f}')
 ax1.legend(loc=0)
 fig = ax1.get_figure()
