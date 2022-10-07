@@ -53,6 +53,10 @@ blist.sort()
 ax1 = lp.init_fig('$\\beta^{2}\\Omega$', '$\\phi_\\infty$', label_size=16)
 ax1.set_xscale('log')
 ax1.grid(True, which='both')
+
+ax2 = lp.init_fig('$\\Omega$', '$\\phi_\\infty$', label_size=16)
+ax2.set_xscale('log')
+ax2.grid(True, which='both')
 for beta in blist:
     plist = bybeta[beta]
     
@@ -79,8 +83,13 @@ for beta in blist:
         loc_edge = 'rt')
     fig.savefig(os.path.join(postdir, f'beta{int(beta*10):02d}.png'))
 
-    ax1.plot(np.array(omega)*beta**2, phi, **marker_list.pop(0), label = f'$\\beta$ = {beta:0.2f}')
-    #ax1.plot(omega, phi, **marker_list.pop(), label = f'$\\beta$ = {beta:0.1f}')
+    mm = marker_list.pop(0)
+    ax1.plot(np.array(omega)*beta**2, phi, **mm, label = f'$\\beta$ = {beta:0.2f}')
+    ax2.plot(omega, phi, **mm, label = f'$\\beta$ = {beta:0.1f}')
 ax1.legend(loc=0)
 fig = ax1.get_figure()
-fig.savefig(os.path.join(postdir, 'phi.png'))
+fig.savefig(os.path.join(postdir, 'phib2w.png'))
+
+ax2.legend(loc=0)
+fig = ax2.get_figure()
+fig.savefig(os.path.join(postdir, 'phiw.png'))

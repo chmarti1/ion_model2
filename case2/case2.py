@@ -30,7 +30,7 @@ if __name__ == '__main__':
     for index,ip in ipm.items():
         print(index)
         s.init_param(ip)
-        s.init_grid(.002)
+        s.init_grid(.001)
         s.init_mat()
         s.init_solution()
         
