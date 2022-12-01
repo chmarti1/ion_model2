@@ -3,6 +3,7 @@
 import sheath1d as s1d
 import os
 from miscpy import lplot as lp
+import numpy as np
 
 datadir = 'data'
 postdir = 'post'
@@ -79,6 +80,14 @@ for alpha in alist:
     fig.savefig(os.path.join(postdir, f'alpha{int(alpha*10):02d}.png'))
     
     ax1.plot(R, phi, **marker_list.pop(), label = f'$\\alpha$ = {alpha:0.1f}')
-    ax1.legend(loc=0)
-    fig = ax1.get_figure()
-    fig.savefig(os.path.join(postdir, 'phi.png'))
+
+phi = np.linspace(3.5,7,21)
+A = 0.16
+mm = 0.75
+mu = 200
+R = mu * A**(-1/mm)*np.exp(-phi / mm)
+ax1.plot(R, phi, 'k-')
+
+ax1.legend(loc=0)
+fig = ax1.get_figure()    
+fig.savefig(os.path.join(postdir, 'phi.png'))
